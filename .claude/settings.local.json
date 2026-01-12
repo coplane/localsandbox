@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(uv run ruff:*)",
+      "Bash(uv run ruff format:*)",
+      "Bash(uv run pyright:*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

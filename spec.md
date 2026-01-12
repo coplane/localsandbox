@@ -11,31 +11,75 @@ BashFS enables Python-based AI agents to safely execute bash commands within an 
 - Structured results and typed exceptions
 - Automatic audit logging of all operations
 - Key-value store for agent state
+- Snapshot/restore for cross-session persistence
 
 ## Architecture
 
-### Node Subprocess Model
+### TypeScript Shim Model
 
-Each bash operation spawns a Node subprocess that:
-1. Hydrates the in-memory filesystem from AgentFS SQLite
-2. Executes the bash command via just-bash
-3. Persists filesystem changes back to SQLite
-4. Returns structured results to Python
+BashFS uses a TypeScript CLI shim (`bashfs-shim`) that bridges Python to the Node.js ecosystem:
 
-This model prioritizes simplicity over latency. Each call is isolated but state persists via the SQLite backend.
+```
+┌─────────────────┐     subprocess      ┌─────────────────────────────────┐
+│   Python SDK    │ ─────────────────── │  TypeScript Shim (bashfs-shim)  │
+│   (bashfs.py)   │     JSON stdio      │  just-bash + agentfs-sdk        │
+└─────────────────┘                     └─────────────────────────────────┘
+        │                                              │
+        │                                              │
+        ▼                                              ▼
+┌─────────────────┐                     ┌─────────────────────────────────┐
+│  Temp SQLite    │◄────────────────────│  AgentFS (filesystem + KV +     │
+│  Database File  │   persistence       │  audit trail)                   │
+└─────────────────┘                     └─────────────────────────────────┘
+```
+
+**How it works:**
+1. Python creates a temp SQLite database file per `BashFS` instance
+2. Each `bash()` call invokes the shim CLI with the database path
+3. The shim opens AgentFS with that database, creates a just-bash instance with the AgentFS filesystem
+4. Command executes, changes persist to SQLite automatically
+5. Shim returns JSON result to Python
+
+**Why this model:**
+- AgentFS provides a filesystem adapter for just-bash (`agentfs-sdk/just-bash`)
+- All state (files, KV, audit trail) lives in a single SQLite file
+- Snapshots are just the SQLite file bytes - trivially portable
+- The shim is bundled with the Python package (no global npm install required)
 
 ### Concurrency Model
 
 Each `BashFS` instance owns its own SQLite database file. No sharing between instances, no race conditions. Users requiring concurrent access should create separate sandbox instances.
 
+## Project Structure
+
+```
+bashfs-py/
+├── bashfs/                 # Python package
+│   ├── __init__.py
+│   ├── core.py            # BashFS class
+│   └── exceptions.py      # Exception hierarchy
+├── shim/                   # TypeScript CLI shim
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── src/
+│       └── cli.ts         # CLI entry point
+├── tests/
+└── pyproject.toml
+```
+
 ## Dependencies
 
-**Prerequisites** (user must install):
+**Python package dependencies:**
 - Python 3.12+
-- Node.js 18+
-- `npm install -g just-bash agentfs-sdk`
 
-The SDK assumes these are pre-installed and available on PATH.
+**Bundled with package:**
+- TypeScript shim (`shim/`) - installed via `pnpm install` during development
+- Requires Node.js 18+ at runtime
+
+**Runtime prerequisites** (user must have installed):
+- Node.js 18+
+
+The shim's node_modules are bundled or the shim is compiled to a standalone script, so users don't need to run npm/pnpm install.
 
 ## Core API
 
@@ -50,7 +94,7 @@ sandbox = BashFS(
     files={
         '/home/user/main.py': 'print("hello")',
         '/home/user/data.json': Path('./local/data.json'),  # snapshot from local
-        '/home/user/image.png': b64encode(image_bytes),     # binary via base64
+        '/home/user/image.png': b'\\x89PNG...',             # binary content
     },
     preset=ExecutionPreset.NORMAL,  # or STRICT, PERMISSIVE
     cwd='/home/user',  # default
@@ -69,7 +113,7 @@ sandbox.destroy()
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `files` | `dict[str, str \| Path \| bytes]` | `{}` | Initial filesystem contents. String values are file content, `Path` values are read and snapshotted at creation, `bytes` are base64-decoded as binary. |
+| `files` | `dict[str, str \| Path \| bytes]` | `{}` | Initial filesystem contents. String values are file content, `Path` values are read and snapshotted at creation, `bytes` are written as binary. |
 | `preset` | `ExecutionPreset` | `NORMAL` | Execution limits preset |
 | `cwd` | `str` | `'/home/user'` | Initial working directory |
 | `snapshot` | `bytes \| None` | `None` | Resume from a previously exported AgentFS snapshot. Mutually exclusive with `files`. |
@@ -94,7 +138,6 @@ class BashResult:
     stderr: str
     exit_code: int
     duration_ms: float
-    # File tracking delegated to just-bash internals if available
 ```
 
 On success, `exit_code == 0`. On failure, a structured exception is raised instead of returning.
@@ -156,7 +199,7 @@ exists: bool = sandbox.exists('/home/user/main.py')
 sandbox.delete_file('/home/user/temp.txt')
 ```
 
-These methods operate directly on the AgentFS SQLite backend without spawning bash.
+These methods invoke the shim with specific operations (not bash commands) for direct AgentFS access.
 
 ## Snapshot & Resume
 
@@ -188,6 +231,8 @@ The exported snapshot includes:
 - KV store data
 - Audit trail history
 
+**Implementation:** `export_snapshot()` simply reads the SQLite database file as bytes. Resuming writes those bytes to a new temp file and opens AgentFS with that path.
+
 ## Key-Value Store
 
 Separate API for agent state persistence:
@@ -203,6 +248,8 @@ keys: list[str] = sandbox.kv.keys()
 ```
 
 Values are strings only. Users must serialize/deserialize complex objects themselves.
+
+KV operations invoke the shim with specific KV commands, which use AgentFS's built-in KV store.
 
 ## Async Support
 
@@ -245,7 +292,8 @@ sandbox = BashFS(files={...})
 ```
 
 - SQLite database file created in temp directory
-- Initial files snapshotted and written to AgentFS
+- If `files` provided: shim seeds initial files into AgentFS
+- If `snapshot` provided: bytes written to temp file, AgentFS opens it
 - Local `Path` references read immediately (not lazily)
 
 ### Usage
@@ -254,11 +302,12 @@ sandbox = BashFS(files={...})
 result = sandbox.bash('...')
 ```
 
-- Each call spawns fresh Node subprocess
-- Subprocess hydrates filesystem from SQLite
+- Each call spawns the shim CLI subprocess
+- Shim opens AgentFS with the SQLite database path
+- Creates just-bash instance with AgentFS filesystem
 - Command executes in just-bash sandbox
-- Changes persist back to SQLite
-- Subprocess exits
+- Changes persist to SQLite automatically (AgentFS handles this)
+- Shim returns JSON result, subprocess exits
 
 ### Destruction
 
@@ -311,6 +360,33 @@ sandbox.bash('cat file2.txt')
 ### SQLite File Location
 
 AgentFS SQLite files are created in the system temp directory. Users cannot currently specify a custom location.
+
+## Shim CLI Interface
+
+The TypeScript shim (`bashfs-shim`) accepts commands via CLI arguments:
+
+```bash
+# Execute bash command
+node shim/dist/cli.js bash --db /tmp/bashfs.db --cwd /home/user --command "ls -la"
+
+# Seed initial files (called once at BashFS creation)
+node shim/dist/cli.js seed --db /tmp/bashfs.db --files '{"path": "content", ...}'
+
+# File operations
+node shim/dist/cli.js read-file --db /tmp/bashfs.db --path /home/user/file.txt
+node shim/dist/cli.js write-file --db /tmp/bashfs.db --path /home/user/file.txt --content "..."
+node shim/dist/cli.js list-files --db /tmp/bashfs.db --path /home/user
+node shim/dist/cli.js exists --db /tmp/bashfs.db --path /home/user/file.txt
+node shim/dist/cli.js delete-file --db /tmp/bashfs.db --path /home/user/file.txt
+
+# KV operations
+node shim/dist/cli.js kv-get --db /tmp/bashfs.db --key mykey
+node shim/dist/cli.js kv-set --db /tmp/bashfs.db --key mykey --value myvalue
+node shim/dist/cli.js kv-delete --db /tmp/bashfs.db --key mykey
+node shim/dist/cli.js kv-keys --db /tmp/bashfs.db
+```
+
+All commands output JSON to stdout.
 
 ## Usage with Agent Frameworks
 
@@ -456,3 +532,4 @@ def test_with_fixture(sandbox):
 - Lazy file loading for large filesystems
 - Mock implementation for faster tests
 - Streaming output for long-running commands
+- Persistent Node process for reduced latency (IPC instead of subprocess per call)
