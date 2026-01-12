@@ -1,0 +1,7 @@
+[project]
+name = "bashfs-py"
+version = "0.1.0"
+description = "A python SDK for a agentfs + just-bash agent sandbox."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
