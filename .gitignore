@@ -11,3 +11,8 @@ wheels/
 
 # Coding agents
 .claude/
+
+
+# any node modules
+node_modules/
+shim/node_modules/

@@ -6,7 +6,11 @@
       "Bash(uv run ruff:*)",
       "Bash(uv run ruff format:*)",
       "Bash(uv run pyright:*)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(pnpm install:*)",
+      "Bash(pnpm build:*)",
+      "Bash(uv run python:*)",
+      "Bash(uv run pytest:*)"
     ]
   }
 }
