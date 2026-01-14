@@ -258,10 +258,16 @@ Incremental phases - each phase is functional and testable before moving to the 
 
 ## Future Enhancements
 
-### Simpler Seeding via AgentFS Direct API
-- [ ] Explore using AgentFS filesystem API directly for seeding instead of bash scripts
-- [ ] Currently seeding uses `bash.exec('cat > file << EOF...')` which is indirect
-- [ ] AgentFS `fs` interface may have direct file write methods that are simpler/faster
+### Direct AgentFS Filesystem Operations ✅
+- [x] Migrated file operations to use `agent.fs` directly instead of bash:
+  - `seed` - uses `agent.fs.writeFile()` for both text and binary content
+  - `read-file` - uses `agent.fs.readFile()`
+  - `write-file` - uses `agent.fs.writeFile()` (auto-creates parent dirs)
+  - `list-files` - uses `agent.fs.readdir()`
+  - `exists` - uses `agent.fs.stat()` with try/catch
+  - `delete-file` - uses `agent.fs.unlink()`
+- [x] Removed bash overhead for file operations (~50% fewer internal operations)
+- [x] Binary file handling simplified (direct Buffer write vs hex printf chunks)
 
 ---
 

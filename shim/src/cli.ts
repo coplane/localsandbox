@@ -60,9 +60,9 @@ async function bashCommand(
         cwd,
         executionLimits: limits
           ? {
-              maxLoopIterations: limits.maxLoopIterations,
-              maxCommandCount: limits.maxCommandCount,
-            }
+            maxLoopIterations: limits.maxLoopIterations,
+            maxCommandCount: limits.maxCommandCount,
+          }
           : undefined,
       });
 
@@ -101,44 +101,18 @@ async function seedCommand(
     const files = JSON.parse(filesJson) as Record<string, FileContent>;
     const agent = await AgentFS.open({ path: dbPath });
     try {
-      const fs = await agentfs(agent.fs);
-      const bash = new Bash({ fs, cwd: "/home/user" });
-
       const startTime = Date.now();
       const paths = Object.keys(files);
 
-      // Create directories and write files
+      // Write files directly using agent.fs
       for (const [path, content] of Object.entries(files)) {
-        // Ensure parent directory exists
-        const dir = path.substring(0, path.lastIndexOf("/"));
-        if (dir) {
-          await bash.exec(`mkdir -p "${dir}"`);
-        }
-
         if (isBinaryContent(content)) {
-          // Binary content - decode base64 and write using printf with octal escapes
+          // Binary content - decode base64 and write as Buffer
           const decoded = Buffer.from(content.base64, "base64");
-          // Convert to hex string for printf
-          const hexStr = decoded.toString("hex");
-          // Use printf with hex escapes to write binary data
-          // Split into chunks to avoid command line length limits
-          const chunkSize = 1000; // characters of hex = 500 bytes
-          let first = true;
-          for (let i = 0; i < hexStr.length; i += chunkSize) {
-            const chunk = hexStr.slice(i, i + chunkSize);
-            // Convert hex pairs to \xHH format
-            const printfStr = chunk.replace(/../g, "\\x$&");
-            const op = first ? ">" : ">>";
-            await bash.exec(`printf '${printfStr}' ${op} "${path}"`);
-            first = false;
-          }
-          // Handle empty binary files
-          if (hexStr.length === 0) {
-            await bash.exec(`printf '' > "${path}"`);
-          }
+          await agent.fs.writeFile(path, decoded);
         } else {
-          // Text content - use heredoc
-          await bash.exec(`cat > "${path}" << 'BASHFS_EOF'\n${content}\nBASHFS_EOF`);
+          // Text content - write directly
+          await agent.fs.writeFile(path, content, "utf8");
         }
       }
 
@@ -167,25 +141,36 @@ async function readFileCommand(dbPath: string, path: string): Promise<void> {
   try {
     const agent = await AgentFS.open({ path: dbPath });
     try {
-      const fs = await agentfs(agent.fs);
-      const bash = new Bash({ fs, cwd: "/home/user" });
       const startTime = Date.now();
-      const result = await bash.exec(`cat "${path}"`);
-      const endTime = Date.now();
+      let content: string;
+      let success = true;
 
+      try {
+        content = await agent.fs.readFile(path, "utf8");
+      } catch (err) {
+        const endTime = Date.now();
+        await agent.tools.record(
+          "read_file",
+          startTime,
+          endTime,
+          { path },
+          { success: false }
+        );
+        const message = err instanceof Error ? err.message : String(err);
+        output({ error: message, type: "file_not_found" });
+        process.exit(1);
+      }
+
+      const endTime = Date.now();
       await agent.tools.record(
         "read_file",
         startTime,
         endTime,
         { path },
-        { exitCode: result.exitCode }
+        { success }
       );
 
-      if (result.exitCode !== 0) {
-        output({ error: result.stderr, type: "file_not_found" });
-        process.exit(1);
-      }
-      output({ content: result.stdout });
+      output({ content });
     } finally {
       await agent.close();
     }
@@ -203,20 +188,12 @@ async function writeFileCommand(
   try {
     const agent = await AgentFS.open({ path: dbPath });
     try {
-      const fs = await agentfs(agent.fs);
-      const bash = new Bash({ fs, cwd: "/home/user" });
       const startTime = Date.now();
 
-      // Ensure parent directory exists
-      const dir = path.substring(0, path.lastIndexOf("/"));
-      if (dir) {
-        await bash.exec(`mkdir -p "${dir}"`);
-      }
+      // writeFile auto-creates parent directories via ensureParentDirs
+      await agent.fs.writeFile(path, content, "utf8");
 
-      // Write file using heredoc
-      await bash.exec(`cat > "${path}" << 'BASHFS_EOF'\n${content}\nBASHFS_EOF`);
       const endTime = Date.now();
-
       await agent.tools.record(
         "write_file",
         startTime,
@@ -239,29 +216,34 @@ async function listFilesCommand(dbPath: string, path: string): Promise<void> {
   try {
     const agent = await AgentFS.open({ path: dbPath });
     try {
-      const fs = await agentfs(agent.fs);
-      const bash = new Bash({ fs, cwd: "/home/user" });
       const startTime = Date.now();
-      const result = await bash.exec(`ls -1 "${path}"`);
+      let files: string[];
+
+      try {
+        files = await agent.fs.readdir(path);
+      } catch (err) {
+        const endTime = Date.now();
+        await agent.tools.record(
+          "list_files",
+          startTime,
+          endTime,
+          { path },
+          { success: false }
+        );
+        const message = err instanceof Error ? err.message : String(err);
+        output({ error: message, type: "list_error" });
+        process.exit(1);
+      }
+
       const endTime = Date.now();
-
-      const files = result.stdout
-        .trim()
-        .split("\n")
-        .filter((f) => f.length > 0);
-
       await agent.tools.record(
         "list_files",
         startTime,
         endTime,
         { path },
-        { exitCode: result.exitCode, count: files.length }
+        { success: true, count: files.length }
       );
 
-      if (result.exitCode !== 0) {
-        output({ error: result.stderr, type: "list_error" });
-        process.exit(1);
-      }
       output({ files });
     } finally {
       await agent.close();
@@ -276,14 +258,17 @@ async function existsCommand(dbPath: string, path: string): Promise<void> {
   try {
     const agent = await AgentFS.open({ path: dbPath });
     try {
-      const fs = await agentfs(agent.fs);
-      const bash = new Bash({ fs, cwd: "/home/user" });
       const startTime = Date.now();
-      const result = await bash.exec(`test -e "${path}"`);
+      let exists = false;
+
+      try {
+        await agent.fs.stat(path);
+        exists = true;
+      } catch {
+        exists = false;
+      }
+
       const endTime = Date.now();
-
-      const exists = result.exitCode === 0;
-
       await agent.tools.record(
         "exists",
         startTime,
@@ -306,24 +291,33 @@ async function deleteFileCommand(dbPath: string, path: string): Promise<void> {
   try {
     const agent = await AgentFS.open({ path: dbPath });
     try {
-      const fs = await agentfs(agent.fs);
-      const bash = new Bash({ fs, cwd: "/home/user" });
       const startTime = Date.now();
-      const result = await bash.exec(`rm "${path}"`);
-      const endTime = Date.now();
 
+      try {
+        await agent.fs.unlink(path);
+      } catch (err) {
+        const endTime = Date.now();
+        await agent.tools.record(
+          "delete_file",
+          startTime,
+          endTime,
+          { path },
+          { success: false }
+        );
+        const message = err instanceof Error ? err.message : String(err);
+        output({ error: message, type: "delete_error" });
+        process.exit(1);
+      }
+
+      const endTime = Date.now();
       await agent.tools.record(
         "delete_file",
         startTime,
         endTime,
         { path },
-        { exitCode: result.exitCode }
+        { success: true }
       );
 
-      if (result.exitCode !== 0) {
-        output({ error: result.stderr, type: "delete_error" });
-        process.exit(1);
-      }
       output({ success: true });
     } finally {
       await agent.close();

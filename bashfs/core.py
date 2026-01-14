@@ -321,7 +321,6 @@ class BashFS:
                 cmd_list.extend([f"--{key}", value])
 
         try:
-            print(cmd_list)
             return subprocess.run(
                 cmd_list,
                 capture_output=True,
