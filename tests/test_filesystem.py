@@ -7,7 +7,6 @@ import pytest
 
 from localsandbox import (
     LocalSandbox,
-    CommandError,
     FileNotFoundError,
 )
 

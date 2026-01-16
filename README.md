@@ -1,14 +1,16 @@
 # LocalSandbox
 
 A Python SDK for sandboxed filesystem operations, built on
-[just-bash](https://github.com/nicholasgriffintn/just-bash) and
-[AgentFS](https://github.com/tursodatabase/agentfs). Provides AI agents with a
-persistent, isolated environment backed by SQLite.
+[just-bash](https://github.com/nicholasgriffintn/just-bash),
+[AgentFS](https://github.com/tursodatabase/agentfs), and
+[Pyodide](https://pyodide.org/). Provides AI agents with a persistent, isolated
+environment backed by SQLite.
 
 ## Features
 
 - **Sandboxed Execution**: Run bash commands in an isolated environment
-- **Python Execution**: Run Python via Pyodide on the same virtual filesystem
+- **Python Execution**: Run Python via Pyodide (WebAssembly) on the same virtual
+  filesystem
 - **Persistent Filesystem**: All file operations persist across commands in
   SQLite
 - **Key-Value Store**: Separate KV API for agent state management
@@ -23,22 +25,32 @@ persistent, isolated environment backed by SQLite.
 
 ```bash
 pip install localsandbox
+# or
+uv add localsandbox
 ```
 
 ### Prerequisites
 
-The package requires Deno to run the TypeScript shim. Install Deno and ensure
-`deno` is on your PATH.
+The package requires Deno to run the TypeScript shim. Install Deno
+(`brew install deno`) and ensure `deno` is on your PATH.
 
 ## Quick Start
 
 ```python
 from localsandbox import LocalSandbox
 
-# Basic usage
+# Basic usage with context manager (recommended)
 with LocalSandbox() as sandbox:
     result = sandbox.bash('echo "Hello, World!"')
     print(result.stdout)  # Hello, World!
+
+# Without context manager
+sandbox = LocalSandbox()
+try:
+    result = sandbox.bash('echo "Hello!"')
+    print(result.stdout)
+finally:
+    sandbox.destroy()
 
 # Seed initial files
 with LocalSandbox(files={"/app/main.py": 'print("hello")'}) as sandbox:
@@ -218,33 +230,24 @@ sandbox = LocalSandbox(preset=ExecutionPreset.STRICT)
 sandbox = LocalSandbox(preset=ExecutionPreset.PERMISSIVE)
 ```
 
-## Exception Hierarchy
-
-```
-LocalSandboxError (base)
-├── CommandError (non-zero exit)
-│   ├── FileNotFoundError (with .path)
-│   └── PermissionError (with .path)
-├── ExecutionLimitError (with .limit_type, .limit_value)
-├── SubprocessCrashed
-└── TimeoutError
-```
-
 ## Architecture
 
-LocalSandbox uses a TypeScript shim that bridges Python to:
+LocalSandbox uses a TypeScript shim (running on Deno) that bridges Python to:
 
-- **just-bash**: A bash interpreter/simulator
+- **just-bash**: A bash interpreter/simulator written in TypeScript
 - **AgentFS**: SQLite-based virtual filesystem
+- **Pyodide**: Python interpreter compiled to WebAssembly for sandboxed Python
+  execution
 
 Each operation spawns a Deno subprocess that:
 
 1. Opens the SQLite database
-2. Executes the operation via just-bash
+2. Executes the operation via just-bash or Pyodide
 3. Persists changes back to SQLite
 4. Returns JSON results
 
 This architecture provides strong isolation while maintaining state persistence.
+Both bash and Python share the same virtual filesystem backed by SQLite.
 
 ## Development
 

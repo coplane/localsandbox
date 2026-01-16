@@ -24,9 +24,6 @@ wheels = [
 name = "localsandbox"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
-    { name = "ruff" },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -37,7 +34,6 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "ruff", specifier = ">=0.14.11" }]
 
 [package.metadata.requires-dev]
 dev = [
