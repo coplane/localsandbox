@@ -6,6 +6,11 @@ A Python SDK for sandboxed filesystem operations, built on
 [Pyodide](https://pyodide.org/). Provides AI agents with a persistent, isolated
 environment backed by SQLite.
 
+> ⚠️ **Warning**: This project is in beta. While it provides isolation through
+> WebAssembly and a simulated bash environment, it has not been security audited
+> and should **not** be relied upon as a fully secure sandbox for running
+> untrusted code. Use at your own risk.
+
 ## Features
 
 - **Sandboxed Execution**: Run bash commands in an isolated environment
