@@ -1,3 +1,10 @@
+[project]
+name = "localsandbox"
+version = "0.1.0"
+description = "A python SDK for a agentfs + just-bash + pyodide agent sandbox."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
 
 [build-system]
 requires = ["uv_build>=0.8.19,<0.10.0"]
@@ -6,21 +13,13 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-root = ""
 module-name = ["localsandbox"]
-[project]
-name = "localsandbox"
-version = "0.1.0"
-description = "A python SDK for a agentfs + just-bash agent sandbox."
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "ruff>=0.14.11",
-]
 
 [dependency-groups]
 dev = [
     "pyright>=1.1.408",
     "pytest>=9.0.2",
     "pytest-asyncio>=0.25.0",
+    "ruff>=0.14.11",
 ]
 
 [tool.pytest.ini_options]
