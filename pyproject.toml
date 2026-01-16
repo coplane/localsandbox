@@ -1,5 +1,13 @@
+
+[build-system]
+requires = ["uv_build>=0.8.19,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+module-name = ["localsandbox"]
 [project]
-name = "bashfs-py"
+name = "localsandbox"
 version = "0.1.0"
 description = "A python SDK for a agentfs + just-bash agent sandbox."
 readme = "README.md"

@@ -1,33 +1,31 @@
-"""BashFS: Sandboxed filesystem operations for AI agents."""
+"""Public exports for the localsandbox package."""
 
-from bashfs.core import (
-    BashFS,
+from localsandbox.core import (
     BashResult,
     ExecutionPreset,
     HistoryEntry,
-    KVStore,
+    LocalSandbox,
     PythonResult,
 )
-from bashfs.exceptions import (
-    BashFSError,
+from localsandbox.exceptions import (
     CommandError,
     ExecutionLimitError,
     FileNotFoundError,
+    LocalSandboxError,
     PermissionError,
     SubprocessCrashed,
     TimeoutError,
 )
 
 __all__ = [
-    "BashFS",
-    "BashFSError",
     "BashResult",
     "CommandError",
     "ExecutionLimitError",
     "ExecutionPreset",
     "FileNotFoundError",
     "HistoryEntry",
-    "KVStore",
+    "LocalSandbox",
+    "LocalSandboxError",
     "PermissionError",
     "PythonResult",
     "SubprocessCrashed",

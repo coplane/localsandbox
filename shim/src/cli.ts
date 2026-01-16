@@ -1,6 +1,6 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write --allow-env --allow-net --allow-ffi
 /**
- * BashFS TypeScript Shim CLI
+ * LocalSandbox TypeScript Shim CLI
  *
  * Bridges Python to just-bash + AgentFS.
  * All commands output JSON to stdout.
@@ -57,7 +57,12 @@ async function bashCommand(
     // Open AgentFS directly so we can close it properly
     const agent = await AgentFS.open({ path: dbPath });
     try {
-      const fs = await agentfs(agent.fs);
+      // To align with Python (which mounts at /data), we need to present
+      // the AgentFS root at /data within the bash environment.
+      // We can achieve this by creating a virtual root that contains 'data'.
+      
+      const fs = await agentfs(agent.fs, "/data");
+      
       const bash = new Bash({
         fs,
         cwd,
@@ -433,7 +438,7 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    console.error("Usage: bashfs-shim <command> [options]");
+    console.error("Usage: localsandbox-shim <command> [options]");
     console.error(
       "Commands: bash, execute-python, seed, read-file, write-file, list-files, exists, delete-file, kv-get, kv-set, kv-delete, kv-keys, checkpoint, history"
     );

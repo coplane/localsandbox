@@ -1,4 +1,4 @@
-"""Core BashFS implementation."""
+"""Core LocalSandbox implementation."""
 
 import asyncio
 import atexit
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from bashfs.exceptions import (
+from localsandbox.exceptions import (
     CommandError,
     ExecutionLimitError,
     FileNotFoundError,
@@ -55,14 +55,14 @@ _PRESET_LIMITS: dict[ExecutionPreset, dict[str, int]] = {
     },
 }
 
-# Global registry of active BashFS instances for atexit cleanup
+# Global registry of active LocalSandbox instances for atexit cleanup
 # Uses weak references so instances can be garbage collected normally
-_active_instances: weakref.WeakSet["BashFS"] = weakref.WeakSet()
+_active_instances: weakref.WeakSet["LocalSandbox"] = weakref.WeakSet()
 _atexit_registered = False
 
 
 def _cleanup_all_instances() -> None:
-    """Clean up all active BashFS instances at process exit."""
+    """Clean up all active LocalSandbox instances at process exit."""
     for instance in list(_active_instances):
         try:
             instance.destroy()
@@ -118,12 +118,12 @@ class KVStore:
     filesystem and persists in the same SQLite database.
     """
 
-    def __init__(self, bashfs: "BashFS") -> None:
-        self._bashfs = bashfs
+    def __init__(self, sandbox: "LocalSandbox") -> None:
+        self._sandbox = sandbox
 
     def _check_destroyed(self) -> None:
-        if self._bashfs._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+        if self._sandbox._destroyed:
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
     def get(self, key: str) -> str | None:
         """
@@ -140,9 +140,9 @@ class KVStore:
         """
         self._check_destroyed()
 
-        result = self._bashfs._run_shim(
+        result = self._sandbox._run_shim(
             "kv-get",
-            {"db": str(self._bashfs._db_path), "key": key},
+            {"db": str(self._sandbox._db_path), "key": key},
         )
 
         try:
@@ -167,9 +167,9 @@ class KVStore:
         """
         self._check_destroyed()
 
-        result = self._bashfs._run_shim(
+        result = self._sandbox._run_shim(
             "kv-set",
-            {"db": str(self._bashfs._db_path), "key": key, "value": value},
+            {"db": str(self._sandbox._db_path), "key": key, "value": value},
         )
 
         if result.returncode != 0:
@@ -187,9 +187,9 @@ class KVStore:
         """
         self._check_destroyed()
 
-        result = self._bashfs._run_shim(
+        result = self._sandbox._run_shim(
             "kv-delete",
-            {"db": str(self._bashfs._db_path), "key": key},
+            {"db": str(self._sandbox._db_path), "key": key},
         )
 
         if result.returncode != 0:
@@ -210,9 +210,9 @@ class KVStore:
         """
         self._check_destroyed()
 
-        result = self._bashfs._run_shim(
+        result = self._sandbox._run_shim(
             "kv-keys",
-            {"db": str(self._bashfs._db_path), "prefix": prefix},
+            {"db": str(self._sandbox._db_path), "prefix": prefix},
         )
 
         try:
@@ -242,7 +242,7 @@ class KVStore:
         return await asyncio.to_thread(self.keys, prefix)
 
 
-class BashFS:
+class LocalSandbox:
     """
     Sandboxed filesystem operations via just-bash and AgentFS.
 
@@ -259,7 +259,7 @@ class BashFS:
         preset: ExecutionPreset = ExecutionPreset.NORMAL,
     ) -> None:
         """
-        Create a new BashFS sandbox.
+        Create a new LocalSandbox.
 
         Args:
             files: Initial filesystem contents. String values are file content,
@@ -284,8 +284,8 @@ class BashFS:
         self._destroyed = False
 
         # Create temp directory for database
-        self._temp_dir = Path(tempfile.mkdtemp(prefix="bashfs_"))
-        self._db_path = self._temp_dir / "bashfs.db"
+        self._temp_dir = Path(tempfile.mkdtemp(prefix="localsandbox_"))
+        self._db_path = self._temp_dir / "localsandbox.db"
 
         # Initialize KV store
         self.kv = KVStore(self)
@@ -465,7 +465,7 @@ class BashFS:
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
         start_time = time.perf_counter()
         limits_json = json.dumps(self._limits)
@@ -562,7 +562,7 @@ class BashFS:
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
         result = self._run_shim(
             "read-file",
@@ -599,7 +599,7 @@ class BashFS:
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
         result = self._run_shim(
             "write-file",
@@ -624,7 +624,7 @@ class BashFS:
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
         result = self._run_shim(
             "list-files",
@@ -663,7 +663,7 @@ class BashFS:
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
         result = self._run_shim(
             "exists",
@@ -692,7 +692,7 @@ class BashFS:
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
         result = self._run_shim(
             "delete-file",
@@ -727,7 +727,7 @@ class BashFS:
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
         if not self._db_path.exists():
             return b""
@@ -754,7 +754,7 @@ class BashFS:
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
         result = self._run_shim(
             "history",
@@ -804,7 +804,7 @@ class BashFS:
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
-            raise RuntimeError("BashFS instance has been destroyed")
+            raise RuntimeError("LocalSandbox instance has been destroyed")
 
         effective_cwd = cwd if cwd is not None else self._cwd
 
@@ -866,7 +866,7 @@ class BashFS:
 
         self._destroyed = True
 
-    def __enter__(self) -> "BashFS":
+    def __enter__(self) -> "LocalSandbox":
         """Context manager entry - returns self."""
         return self
 

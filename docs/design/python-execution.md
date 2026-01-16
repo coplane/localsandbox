@@ -1,19 +1,19 @@
-# Python Execution in BashFS
+# Python Execution in LocalSandbox
 
 ## Overview
 
-Add Python execution capability to BashFS so both bash and Python operate on the
+Add Python execution capability to LocalSandbox so both bash and Python operate on the
 same virtual filesystem.
 
 ```python
-with BashFS() as sandbox:
+with LocalSandbox() as sandbox:
     sandbox.bash('echo "hello" > /data.txt')
-    result = sandbox.execute_python('print(open("/data.txt").read())')  # prints "hello"
+    result = sandbox.execute_python('print(open("/data/data.txt").read())')  # prints "hello"
 ```
 
 ## Motivation
 
-1. **BashFS owns the filesystem** - It already manages AgentFS SQLite. Python
+1. **LocalSandbox owns the filesystem** - It already manages AgentFS SQLite. Python
    execution sharing that filesystem keeps the abstraction clean.
 
 2. **Mirrors container behavior** - In container sandboxes (Modal, Docker),
@@ -30,7 +30,7 @@ We implement a dual strategy that prioritizes performance where possible
 ### Architecture
 
 ```
-Python call → Shim (node process)
+Python call → Shim (Deno process)
                  ↓
       [Platform Check]
       /             \
@@ -90,10 +90,10 @@ Python execution happens in a separate, isolated Deno subprocess
 
 1. **Process Isolation**: The runner is a separate process from the main Shim.
 2. **Filesystem Sandbox**:
-   - `deno run` is invoked with `--allow-write=<temp-dir>` only.
-   - Can only modify the mounted filesystem, not the host system.
+   - `deno run` is invoked with scoped `--allow-read` and `--allow-write`.
+   - Only the mounted filesystem is writable, not the host system.
 3. **Network Isolation**: No `--allow-net` flag
-4. **Environment Isolation**: Minimal environment variables passed.
+4. **Environment Isolation**: Only cache-related variables are passed.
 
 ## Implementation Details
 
@@ -118,14 +118,14 @@ A lightweight Deno script that:
 ```typescript
 // shim/src/python-runner.ts (Simplified)
 async function runPython(input: RunnerInput) {
-     const py = await getPyodide();
-     const mountPoint = "/agent";
+   const py = await getPyodide();
+   const mountPoint = "/data";
 
-     // Mount the directory (FUSE mount or Synced temp dir)
-     py.FS.mount(py.FS.filesystems.NODEFS, { root: input.fsRoot }, mountPoint);
+   // Mount the directory (FUSE mount or Synced temp dir)
+   py.FS.mount(py.FS.filesystems.NODEFS, { root: input.fsRoot }, mountPoint);
 
-     // Run code
-     await py.runPythonAsync(input.code);
+   // Run code
+   await py.runPythonAsync(input.code);
 }
 ```
 
@@ -160,8 +160,8 @@ import requests
 - [x] Implement FUSE support (Linux)
 - [x] Implement Sync fallback (macOS/Other)
 - [x] Implement `execute-python` shim command
-- [x] Add `execute_python()` method to BashFS (Python SDK)
-- [ ] Add tests
+- [x] Add `execute_python()` method to LocalSandbox (Python SDK)
+- [x] Add tests
 
 ## Future Optimizations
 

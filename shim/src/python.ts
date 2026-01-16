@@ -199,7 +199,7 @@ async function executePythonWithFuse(
   code: string,
   cwd: string
 ): Promise<PythonResult> {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bashfs-python-"));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "localsandbox-python-"));
   const mountPoint = path.join(tempDir, "mnt");
   fs.mkdirSync(mountPoint);
 
@@ -242,7 +242,7 @@ async function executePythonWithSync(
   code: string,
   cwd: string
 ): Promise<PythonResult> {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bashfs-python-"));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "localsandbox-python-"));
 
   try {
     // Sync AgentFS to temp directory

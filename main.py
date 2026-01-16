@@ -1,5 +1,5 @@
 def main():
-    print("Hello from bashfs-py!")
+    print("Hello from localsandbox!")
 
 
 if __name__ == "__main__":

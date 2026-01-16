@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from bashfs import BashFS
+from localsandbox import LocalSandbox
 
 
 class TestPythonExecution:
@@ -13,16 +13,16 @@ class TestPythonExecution:
 
     def test_python_print(self) -> None:
         """Test basic Python print statement."""
-        with BashFS() as sandbox:
+        with LocalSandbox() as sandbox:
             result = sandbox.execute_python('print("hello from python")')
             assert result.stdout.strip() == "hello from python"
             assert result.exit_code == 0
 
     def test_python_reads_sandbox_file(self) -> None:
         """Test that Python can read files from the sandbox."""
-        with BashFS(files={"/data.txt": "sandbox content"}) as sandbox:
+        with LocalSandbox(files={"/data.txt": "sandbox content"}) as sandbox:
             result = sandbox.execute_python("""
-with open('/agent/data.txt') as f:
+with open('/data/data.txt') as f:
     print(f.read().strip())
 """)
             assert result.stdout.strip() == "sandbox content"
@@ -30,9 +30,9 @@ with open('/agent/data.txt') as f:
 
     def test_python_writes_sandbox_file(self) -> None:
         """Test that Python can write files to the sandbox."""
-        with BashFS() as sandbox:
+        with LocalSandbox() as sandbox:
             result = sandbox.execute_python("""
-with open('/agent/output.txt', 'w') as f:
+with open('/data/output.txt', 'w') as f:
     f.write('written by python')
 """)
             assert result.exit_code == 0
@@ -42,7 +42,7 @@ with open('/agent/output.txt', 'w') as f:
 
     def test_python_error_returns_nonzero_exit(self) -> None:
         """Test that Python errors return non-zero exit code."""
-        with BashFS() as sandbox:
+        with LocalSandbox() as sandbox:
             result = sandbox.execute_python("raise ValueError('test error')")
             assert result.exit_code != 0
             assert result.error is not None
@@ -51,7 +51,7 @@ with open('/agent/output.txt', 'w') as f:
 
     def test_python_stderr_captured(self) -> None:
         """Test that Python stderr is captured."""
-        with BashFS() as sandbox:
+        with LocalSandbox() as sandbox:
             result = sandbox.execute_python("""
 import sys
 print('to stderr', file=sys.stderr)
@@ -60,7 +60,7 @@ print('to stderr', file=sys.stderr)
 
     def test_python_with_cwd(self) -> None:
         """Test Python execution with custom cwd."""
-        with BashFS(files={"/project/data.txt": "project data"}) as sandbox:
+        with LocalSandbox(files={"/project/data.txt": "project data"}) as sandbox:
             result = sandbox.execute_python(
                 """
 import os
@@ -72,9 +72,9 @@ print(os.getcwd())
 
     def test_python_modifies_existing_file(self) -> None:
         """Test that Python can modify existing sandbox files."""
-        with BashFS(files={"/file.txt": "original"}) as sandbox:
+        with LocalSandbox(files={"/file.txt": "original"}) as sandbox:
             result = sandbox.execute_python("""
-with open('/agent/file.txt', 'a') as f:
+with open('/data/file.txt', 'a') as f:
     f.write(' + modified')
 """)
             assert result.exit_code == 0
@@ -84,11 +84,11 @@ with open('/agent/file.txt', 'a') as f:
 
     def test_python_creates_directory_and_file(self) -> None:
         """Test that Python can create directories and files."""
-        with BashFS() as sandbox:
+        with LocalSandbox() as sandbox:
             result = sandbox.execute_python("""
 import os
-os.makedirs('/agent/newdir', exist_ok=True)
-with open('/agent/newdir/file.txt', 'w') as f:
+os.makedirs('/data/newdir', exist_ok=True)
+with open('/data/newdir/file.txt', 'w') as f:
     f.write('nested content')
 """)
             assert result.exit_code == 0
@@ -98,7 +98,7 @@ with open('/agent/newdir/file.txt', 'w') as f:
 
     def test_python_result_fields(self) -> None:
         """Test that PythonResult has all expected fields."""
-        with BashFS() as sandbox:
+        with LocalSandbox() as sandbox:
             result = sandbox.execute_python('print("test")')
             assert isinstance(result.stdout, str)
             assert isinstance(result.stderr, str)
@@ -107,7 +107,7 @@ with open('/agent/newdir/file.txt', 'w') as f:
     @pytest.mark.asyncio
     async def test_aexecute_python(self) -> None:
         """Test async Python execution."""
-        sandbox = BashFS()
+        sandbox = LocalSandbox()
         try:
             result = await sandbox.aexecute_python('print("async python")')
             assert result.stdout.strip() == "async python"
@@ -117,7 +117,7 @@ with open('/agent/newdir/file.txt', 'w') as f:
 
     def test_python_records_history(self) -> None:
         """Test that Python execution is recorded in history."""
-        with BashFS() as sandbox:
+        with LocalSandbox() as sandbox:
             sandbox.execute_python('print("recorded")')
             history = sandbox.history()
             assert len(history) == 1
@@ -125,12 +125,12 @@ with open('/agent/newdir/file.txt', 'w') as f:
 
     def test_python_filesystem_blocked(self) -> None:
         """Test that Python cannot read arbitrary host files via JS."""
-        with tempfile.TemporaryDirectory(prefix="bashfs-host-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="localsandbox-host-") as temp_dir:
             target = os.path.join(temp_dir, "secret.txt")
             with open(target, "w", encoding="utf-8") as handle:
                 handle.write("host secret")
 
-            with BashFS() as sandbox:
+            with LocalSandbox() as sandbox:
                 result = sandbox.execute_python(f"""
 import js
 try:
@@ -145,7 +145,7 @@ except Exception as e:
 
     def test_python_network_blocked(self) -> None:
         """Test that Python code cannot access the network."""
-        with BashFS() as sandbox:
+        with LocalSandbox() as sandbox:
             result = sandbox.execute_python("""
 import pyodide.http
 import asyncio

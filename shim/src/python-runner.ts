@@ -48,7 +48,7 @@ async function runPython(input: RunnerInput): Promise<RunnerOutput> {
   capturedStderr = "";
 
   const py = await getPyodide();
-  const mountPoint = "/agent";
+  const mountPoint = "/data";
 
   // Ensure mount point exists
   try {
@@ -73,15 +73,15 @@ async function runPython(input: RunnerInput): Promise<RunnerOutput> {
       ? `${mountPoint}${input.cwd}`
       : `${mountPoint}/${input.cwd}`;
 
-    py.globals.set("_bashfs_cwd", pyCwd);
-    py.globals.set("_bashfs_mount_point", mountPoint);
+    py.globals.set("_localsandbox_cwd", pyCwd);
+    py.globals.set("_localsandbox_mount_point", mountPoint);
 
     await py.runPythonAsync(`
 import os
-if os.path.exists(_bashfs_cwd):
-    os.chdir(_bashfs_cwd)
+if os.path.exists(_localsandbox_cwd):
+    os.chdir(_localsandbox_cwd)
 else:
-    os.chdir(_bashfs_mount_point)
+    os.chdir(_localsandbox_mount_point)
 `);
 
     // Execute user code

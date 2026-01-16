@@ -1,4 +1,4 @@
-# BashFS Implementation Plan
+# LocalSandbox Implementation Plan
 
 Incremental phases - each phase is functional and testable before moving to the next.
 
@@ -17,9 +17,9 @@ Incremental phases - each phase is functional and testable before moving to the 
 - [x] Build shim with `pnpm build`
 
 ### Python Integration
-- [x] Create package structure (`bashfs/__init__.py`, `bashfs/core.py`, `bashfs/exceptions.py`)
+- [x] Create package structure (`localsandbox/__init__.py`, `localsandbox/core.py`, `localsandbox/exceptions.py`)
 - [x] Create `pyproject.toml` with Python 3.12+ requirement
-- [x] Implement minimal `BashFS` class with `__init__` and `destroy`
+- [x] Implement minimal `LocalSandbox` class with `__init__` and `destroy`
 - [x] Generate temp SQLite file path in `__init__`
 - [x] Implement `bash(command)` that spawns shim CLI subprocess
 - [x] Parse JSON response into `BashResult` dataclass
@@ -43,7 +43,7 @@ Incremental phases - each phase is functional and testable before moving to the 
 - [x] Add test: seed file, then `cat` it back
 - [x] Add test: seed multiple files in nested directories
 
-**Testable**: `BashFS(files={'/app/main.py': 'print(1)'})` then `bash('cat /app/main.py')` works.
+**Testable**: `LocalSandbox(files={'/app/main.py': 'print(1)'})` then `bash('cat /app/main.py')` works.
 
 ---
 
@@ -52,7 +52,7 @@ Incremental phases - each phase is functional and testable before moving to the 
 **Goal**: Raise exceptions on command failures instead of returning error results.
 
 - [x] Create exception hierarchy in `exceptions.py`:
-  - `BashFSError` (base)
+  - `LocalSandboxError` (base)
   - `CommandError` (non-zero exit)
   - `TimeoutError`
   - `SubprocessCrashed`
@@ -105,7 +105,7 @@ Incremental phases - each phase is functional and testable before moving to the 
 - [x] Pass limits to just-bash `executionLimits` config
 
 ### Python Exceptions
-- [x] Add `ExecutionLimitError(BashFSError)` with `limit_type`, `limit_value`
+- [x] Add `ExecutionLimitError(LocalSandboxError)` with `limit_type`, `limit_value`
 - [x] Parse limit errors from shim output
 - [x] Add test: infinite loop with STRICT preset raises `ExecutionLimitError`
 
@@ -208,7 +208,7 @@ Incremental phases - each phase is functional and testable before moving to the 
 - [x] Handle cleanup on Python process crash (atexit handler with WeakSet registry)
 - [x] Add context manager support (`__enter__`/`__exit__`) for cleaner usage:
   ```python
-  with BashFS() as sandbox:
+  with LocalSandbox() as sandbox:
       result = sandbox.bash('echo "hello"')
   ```
 - [x] Add test: operations after destroy() raise RuntimeError

@@ -1,11 +1,11 @@
-"""BashFS exception hierarchy."""
+"""LocalSandbox exception hierarchy."""
 
 
-class BashFSError(Exception):
-    """Base exception for all BashFS errors."""
+class LocalSandboxError(Exception):
+    """Base exception for all LocalSandbox errors."""
 
 
-class CommandError(BashFSError):
+class CommandError(LocalSandboxError):
     """Bash command returned non-zero exit code."""
 
     def __init__(
@@ -51,7 +51,7 @@ class PermissionError(CommandError):
         self.path = path
 
 
-class TimeoutError(BashFSError):
+class TimeoutError(LocalSandboxError):
     """Command exceeded time limit."""
 
     def __init__(self, message: str, timeout_ms: int) -> None:
@@ -59,7 +59,7 @@ class TimeoutError(BashFSError):
         self.timeout_ms = timeout_ms
 
 
-class SubprocessCrashed(BashFSError):
+class SubprocessCrashed(LocalSandboxError):
     """Node subprocess terminated unexpectedly (OOM, segfault, killed)."""
 
     def __init__(self, message: str, signal: int | None = None) -> None:
@@ -67,7 +67,7 @@ class SubprocessCrashed(BashFSError):
         self.signal = signal
 
 
-class ExecutionLimitError(BashFSError):
+class ExecutionLimitError(LocalSandboxError):
     """Loop iteration or command count limit exceeded."""
 
     def __init__(
