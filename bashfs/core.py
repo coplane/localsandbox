@@ -23,14 +23,11 @@ from bashfs.exceptions import (
 
 
 def _get_shim_path() -> Path:
-    """Get the path to the compiled shim CLI."""
+    """Get the path to the TypeScript shim CLI (runs via Deno)."""
     package_dir = Path(__file__).parent.parent
-    shim_path = package_dir / "shim" / "dist" / "cli.js"
+    shim_path = package_dir / "shim" / "src" / "cli.ts"
     if not shim_path.exists():
-        raise RuntimeError(
-            f"Shim not found at {shim_path}. "
-            "Run 'cd shim && pnpm install && pnpm build' first."
-        )
+        raise RuntimeError(f"Shim not found at {shim_path}.")
     return shim_path
 
 
@@ -89,6 +86,16 @@ class BashResult:
     stderr: str
     exit_code: int
     duration_ms: float
+
+
+@dataclass
+class PythonResult:
+    """Result of a Python code execution."""
+
+    stdout: str
+    stderr: str
+    exit_code: int
+    error: str | None = None
 
 
 @dataclass
@@ -302,7 +309,7 @@ class BashFS:
         timeout: int = 60,
     ) -> subprocess.CompletedProcess[str]:
         """
-        Run a shim command.
+        Run a shim command via Deno.
 
         Args:
             command: The shim command name (e.g., 'bash', 'seed', 'read-file').
@@ -315,7 +322,16 @@ class BashFS:
         Raises:
             SubprocessCrashed: If the command times out.
         """
-        cmd_list = ["node", str(self._shim_path), command]
+        cmd_list = [
+            "deno",
+            "run",
+            "--allow-read",
+            "--allow-write",
+            "--allow-env",
+            "--allow-ffi",
+            "--allow-run",
+        ]
+        cmd_list.extend([str(self._shim_path), command])
         for key, value in args.items():
             if value is not None:
                 cmd_list.extend([f"--{key}", value])
@@ -768,6 +784,57 @@ class BashFS:
             for e in entries
         ]
 
+    def execute_python(self, code: str, cwd: str | None = None) -> PythonResult:
+        """
+        Execute Python code in the sandbox using Pyodide.
+
+        The Python code runs in a WebAssembly sandbox with access to the
+        sandbox's filesystem. File changes made by Python are persisted back
+        to the sandbox.
+
+        Args:
+            code: The Python code to execute.
+            cwd: Working directory for Python (default: sandbox cwd).
+
+        Returns:
+            PythonResult with stdout, stderr, exit_code, and optional error.
+
+        Raises:
+            SubprocessCrashed: If Python execution fails at the shim level.
+            RuntimeError: If the sandbox has been destroyed.
+        """
+        if self._destroyed:
+            raise RuntimeError("BashFS instance has been destroyed")
+
+        effective_cwd = cwd if cwd is not None else self._cwd
+
+        result = self._run_shim(
+            "execute-python",
+            {
+                "db": str(self._db_path),
+                "code": code,
+                "cwd": effective_cwd,
+            },
+            timeout=300,  # Python can be slow, especially first load
+        )
+
+        try:
+            output = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            if result.returncode != 0:
+                raise SubprocessCrashed(f"Python execution failed: {result.stderr}")
+            raise SubprocessCrashed(f"Failed to parse output: {result.stdout[:500]}")
+
+        if "error" in output and output.get("exitCode") is None:
+            raise SubprocessCrashed(f"Python execution error: {output['error']}")
+
+        return PythonResult(
+            stdout=output.get("stdout", ""),
+            stderr=output.get("stderr", ""),
+            exit_code=output.get("exitCode", 0),
+            error=output.get("error"),
+        )
+
     def destroy(self) -> None:
         """
         Destroy the sandbox and clean up resources.
@@ -858,6 +925,10 @@ class BashFS:
     async def ahistory(self, limit: int = 100) -> list[HistoryEntry]:
         """Async version of history()."""
         return await asyncio.to_thread(self.history, limit)
+
+    async def aexecute_python(self, code: str, cwd: str | None = None) -> PythonResult:
+        """Async version of execute_python()."""
+        return await asyncio.to_thread(self.execute_python, code, cwd)
 
     async def adestroy(self) -> None:
         """Async version of destroy()."""

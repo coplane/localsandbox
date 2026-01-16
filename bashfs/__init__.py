@@ -1,6 +1,13 @@
 """BashFS: Sandboxed filesystem operations for AI agents."""
 
-from bashfs.core import BashFS, BashResult, ExecutionPreset, HistoryEntry, KVStore
+from bashfs.core import (
+    BashFS,
+    BashResult,
+    ExecutionPreset,
+    HistoryEntry,
+    KVStore,
+    PythonResult,
+)
 from bashfs.exceptions import (
     BashFSError,
     CommandError,
@@ -22,6 +29,7 @@ __all__ = [
     "HistoryEntry",
     "KVStore",
     "PermissionError",
+    "PythonResult",
     "SubprocessCrashed",
     "TimeoutError",
 ]

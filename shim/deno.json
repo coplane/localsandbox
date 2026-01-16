@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "strict": true
+  },
+  "nodeModulesDir": "auto",
+  "tasks": {
+    "run": "deno run --allow-read --allow-write --allow-env --allow-net --allow-ffi src/cli.ts",
+    "check": "deno check src/cli.ts src/python.ts"
+  }
+}

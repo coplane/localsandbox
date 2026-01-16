@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env --allow-net --allow-ffi
 /**
  * BashFS TypeScript Shim CLI
  *
@@ -6,10 +6,13 @@
  * All commands output JSON to stdout.
  */
 
-import { Bash } from "just-bash";
-import { agentfs } from "agentfs-sdk/just-bash";
-import { AgentFS } from "agentfs-sdk";
+import { Bash } from "npm:just-bash";
+import { agentfs } from "npm:agentfs-sdk/just-bash";
+import { AgentFS } from "npm:agentfs-sdk";
+import { Buffer } from "node:buffer";
+import process from "node:process";
 import { parseArgs } from "node:util";
+import { executePython } from "./python.ts";
 
 interface BashResult {
   stdout: string;
@@ -432,7 +435,7 @@ async function main(): Promise<void> {
   if (args.length === 0) {
     console.error("Usage: bashfs-shim <command> [options]");
     console.error(
-      "Commands: bash, seed, read-file, write-file, list-files, exists, delete-file, kv-get, kv-set, kv-delete, kv-keys, checkpoint, history"
+      "Commands: bash, execute-python, seed, read-file, write-file, list-files, exists, delete-file, kv-get, kv-set, kv-delete, kv-keys, checkpoint, history"
     );
     process.exit(1);
   }
@@ -458,6 +461,31 @@ async function main(): Promise<void> {
 
       const limits = values.limits ? JSON.parse(values.limits) : undefined;
       await bashCommand(values.db, values.command, values.cwd!, limits);
+      break;
+    }
+
+    case "execute-python": {
+      const { values } = parseArgs({
+        args: args.slice(1),
+        options: {
+          db: { type: "string" },
+          code: { type: "string" },
+          cwd: { type: "string", default: "/home/user" },
+        },
+      });
+
+      if (!values.db || !values.code) {
+        console.error("execute-python requires --db and --code");
+        process.exit(1);
+      }
+
+      try {
+        const result = await executePython(values.db, values.code, values.cwd!);
+        output(result);
+      } catch (error) {
+        outputError(error, "python_error");
+        process.exit(1);
+      }
       break;
     }
 
