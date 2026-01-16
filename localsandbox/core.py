@@ -24,7 +24,7 @@ from localsandbox.exceptions import (
 
 def _get_shim_path() -> Path:
     """Get the path to the TypeScript shim CLI (runs via Deno)."""
-    package_dir = Path(__file__).parent.parent
+    package_dir = Path(__file__).parent
     shim_path = package_dir / "shim" / "src" / "cli.ts"
     if not shim_path.exists():
         raise RuntimeError(f"Shim not found at {shim_path}.")
