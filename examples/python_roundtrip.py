@@ -29,10 +29,9 @@ def main() -> None:
     console.print("\n[green]Python Code to Execute:[/green]")
     console.print_code(PYTHON_CODE.strip())
 
-    with LocalSandbox(files={"inventory.csv": CSV_DATA}) as sandbox:
+    with LocalSandbox(files={"/data/inventory.csv": CSV_DATA}) as sandbox:
         console.print("\n[yellow]Executing Python code...[/yellow]")
         print(sandbox.bash("ls -l /").stdout.strip())
-        print(sandbox.bash("ls -l /data/").stdout.strip())
         result = sandbox.execute_python(PYTHON_CODE, cwd="/data")
         console.print(f"Python Stdout: [bold cyan]{result.stdout.strip()}[/bold cyan]")
 
