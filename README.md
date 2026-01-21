@@ -1,7 +1,7 @@
 # LocalSandbox
 
 A Python SDK for sandboxed filesystem operations, built on
-[just-bash](https://github.com/nicholasgriffintn/just-bash),
+[just-bash](https://github.com/vercel-labs/just-bash),
 [AgentFS](https://github.com/tursodatabase/agentfs), and
 [Pyodide](https://pyodide.org/). Provides AI agents with a persistent, isolated
 environment backed by SQLite.
