@@ -255,7 +255,7 @@ class LocalSandbox:
         self,
         files: dict[str, str | Path | bytes] | None = None,
         snapshot: bytes | None = None,
-        cwd: str = "/home/user",
+        cwd: str = "/data",
         preset: ExecutionPreset = ExecutionPreset.NORMAL,
     ) -> None:
         """
@@ -264,10 +264,10 @@ class LocalSandbox:
         Args:
             files: Initial filesystem contents. String values are file content,
                    Path values are read and snapshotted at creation,
-                   bytes are written as binary.
+                   bytes are written as binary. All paths should use /data prefix.
             snapshot: Restore from a previously exported snapshot (mutually
                       exclusive with `files`).
-            cwd: Initial working directory.
+            cwd: Initial working directory (default: /data).
             preset: Execution limits preset (STRICT, NORMAL, or PERMISSIVE).
 
         Raises:
@@ -305,7 +305,7 @@ class LocalSandbox:
     def _run_shim(
         self,
         command: str,
-        args: dict[str, str | None],
+        args: dict[str, str | bool | None],
         timeout: int = 60,
     ) -> subprocess.CompletedProcess[str]:
         """
@@ -314,6 +314,7 @@ class LocalSandbox:
         Args:
             command: The shim command name (e.g., 'bash', 'seed', 'read-file').
             args: Dict of argument name to value. None values are skipped.
+                  Boolean True values add the flag without a value.
             timeout: Timeout in seconds.
 
         Returns:
@@ -333,7 +334,11 @@ class LocalSandbox:
         ]
         cmd_list.extend([str(self._shim_path), command])
         for key, value in args.items():
-            if value is not None:
+            if value is None or value is False:
+                continue
+            if value is True:
+                cmd_list.append(f"--{key}")
+            else:
                 cmd_list.extend([f"--{key}", value])
 
         try:
@@ -538,8 +543,11 @@ class LocalSandbox:
                     path=path,
                 )
 
+            msg = f"Command failed with exit code {bash_result.exit_code}"
+            if bash_result.stderr:
+                msg += f": {bash_result.stderr.strip()}"
             raise CommandError(
-                f"Command failed with exit code {bash_result.exit_code}",
+                msg,
                 exit_code=bash_result.exit_code,
                 stdout=bash_result.stdout,
                 stderr=bash_result.stderr,
@@ -587,6 +595,46 @@ class LocalSandbox:
 
         return output.get("content", "")
 
+    def read_file_bytes(self, path: str) -> bytes:
+        """
+        Read file contents as bytes directly without bash.
+
+        Args:
+            path: Absolute path to the file.
+
+        Returns:
+            The file contents as bytes.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            RuntimeError: If the sandbox has been destroyed.
+        """
+        if self._destroyed:
+            raise RuntimeError("LocalSandbox instance has been destroyed")
+
+        result = self._run_shim(
+            "read-file",
+            {"db": str(self._db_path), "path": path, "binary": True},
+        )
+
+        try:
+            output = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            if result.returncode != 0:
+                raise SubprocessCrashed(f"Read file failed: {result.stderr}")
+            raise SubprocessCrashed(f"Failed to parse output: {result.stdout[:500]}")
+
+        if "error" in output:
+            raise FileNotFoundError(
+                f"File not found: {path}",
+                exit_code=1,
+                stdout="",
+                stderr=output["error"],
+                path=path,
+            )
+
+        return base64.b64decode(output.get("content", ""))
+
     def write_file(self, path: str, content: str) -> None:
         """
         Write file contents directly without bash.
@@ -604,6 +652,29 @@ class LocalSandbox:
         result = self._run_shim(
             "write-file",
             {"db": str(self._db_path), "path": path, "content": content},
+        )
+
+        if result.returncode != 0:
+            raise SubprocessCrashed(f"Write file failed: {result.stderr}")
+
+    def write_file_bytes(self, path: str, data: bytes) -> None:
+        """
+        Write binary data to a file directly without bash.
+
+        Args:
+            path: Absolute path to the file.
+            data: Binary data to write to the file.
+
+        Raises:
+            RuntimeError: If the sandbox has been destroyed.
+        """
+        if self._destroyed:
+            raise RuntimeError("LocalSandbox instance has been destroyed")
+
+        content = base64.b64encode(data).decode("ascii")
+        result = self._run_shim(
+            "write-file",
+            {"db": str(self._db_path), "path": path, "content": content, "binary": True},
         )
 
         if result.returncode != 0:
@@ -902,9 +973,17 @@ class LocalSandbox:
         """Async version of read_file()."""
         return await asyncio.to_thread(self.read_file, path)
 
+    async def aread_file_bytes(self, path: str) -> bytes:
+        """Async version of read_file_bytes()."""
+        return await asyncio.to_thread(self.read_file_bytes, path)
+
     async def awrite_file(self, path: str, content: str) -> None:
         """Async version of write_file()."""
         await asyncio.to_thread(self.write_file, path, content)
+
+    async def awrite_file_bytes(self, path: str, data: bytes) -> None:
+        """Async version of write_file_bytes()."""
+        await asyncio.to_thread(self.write_file_bytes, path, data)
 
     async def alist_files(self, path: str) -> list[str]:
         """Async version of list_files()."""

@@ -298,6 +298,42 @@ class TestLocalSandboxFileHelpers:
         finally:
             sandbox.destroy()
 
+    def test_read_file_bytes(self) -> None:
+        """Test reading binary file contents."""
+        binary_data = bytes([0x00, 0x01, 0x02, 0xFF, 0xFE, 0x89, 0x50, 0x4E, 0x47])
+        sandbox = LocalSandbox(files={"/home/user/binary.bin": binary_data})
+        try:
+            content = sandbox.read_file_bytes("/home/user/binary.bin")
+            assert content == binary_data
+        finally:
+            sandbox.destroy()
+
+    def test_write_file_bytes(self) -> None:
+        """Test writing binary file contents."""
+        binary_data = bytes(
+            [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        )  # PNG header
+        sandbox = LocalSandbox()
+        try:
+            sandbox.write_file_bytes("/home/user/test.bin", binary_data)
+            content = sandbox.read_file_bytes("/home/user/test.bin")
+            assert content == binary_data
+        finally:
+            sandbox.destroy()
+
+    def test_read_write_file_bytes_roundtrip(self) -> None:
+        """Test writing and reading binary data roundtrip."""
+        # Create binary data with various byte values
+        binary_data = bytes(range(256))
+        sandbox = LocalSandbox()
+        try:
+            sandbox.write_file_bytes("/home/user/all_bytes.bin", binary_data)
+            content = sandbox.read_file_bytes("/home/user/all_bytes.bin")
+            assert content == binary_data
+            assert len(content) == 256
+        finally:
+            sandbox.destroy()
+
 
 class TestLocalSandboxKeyValueStore:
     """Test KV store functionality."""

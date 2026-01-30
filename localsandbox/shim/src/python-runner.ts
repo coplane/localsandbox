@@ -31,19 +31,23 @@ let capturedStderr = "";
 async function getPyodide(): Promise<PyodideInterface> {
   if (!pyodide) {
     pyodide = await loadPyodide({
-      stdout: (msg) => {
-        capturedStdout += msg + "\n";
-      },
-      stderr: (msg) => {
-        capturedStderr += msg + "\n";
-      },
+      stdout: (msg) => capturedStdout += msg + "\n",
+      stderr: (msg) => capturedStderr += msg + "\n",
+    });
+    // Preload commonly needed packages (suppress loading messages)
+    // We load Pillow/pymupdf directly instead of micropip to prevent arbitrary package installs
+    await pyodide.loadPackage("pillow", {
+      messageCallback: () => {},
+    });
+    await pyodide.loadPackage("pymupdf", {
+      messageCallback: () => {},
     });
   }
   return pyodide;
 }
 
 async function runPython(input: RunnerInput): Promise<RunnerOutput> {
-  // Reset captured output
+  // Reset captured output and enable capture
   capturedStdout = "";
   capturedStderr = "";
 
@@ -69,9 +73,16 @@ async function runPython(input: RunnerInput): Promise<RunnerOutput> {
 
   try {
     // Set working directory
-    const pyCwd = input.cwd.startsWith("/")
-      ? `${mountPoint}${input.cwd}`
-      : `${mountPoint}/${input.cwd}`;
+    // Normalize cwd: strip /data prefix if present (will be re-added by mountPoint)
+    let normalizedCwd = input.cwd;
+    if (normalizedCwd.startsWith(mountPoint + "/")) {
+      normalizedCwd = normalizedCwd.slice(mountPoint.length);
+    } else if (normalizedCwd === mountPoint) {
+      normalizedCwd = "/";
+    }
+    const pyCwd = normalizedCwd.startsWith("/")
+      ? `${mountPoint}${normalizedCwd}`
+      : `${mountPoint}/${normalizedCwd}`;
 
     py.globals.set("_localsandbox_cwd", pyCwd);
     py.globals.set("_localsandbox_mount_point", mountPoint);

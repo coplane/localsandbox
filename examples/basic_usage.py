@@ -1,6 +1,5 @@
-from localsandbox import LocalSandbox
-
 from examples.console import console
+from localsandbox import LocalSandbox
 
 
 def main() -> None:
@@ -14,7 +13,7 @@ def main() -> None:
             f"[green]Command:[/green] echo 'Hello, LocalSandbox!' [green]Output:[/green] {result.stdout.strip()}"
         )
 
-        file_path = "/notes/todo.txt"
+        file_path = "/data/notes/todo.txt"
         content = "buy milk\nship release\n"
 
         console.print(f"[yellow]Writing to '{file_path}':[/yellow]")
@@ -26,8 +25,8 @@ def main() -> None:
         console.print(f"[yellow]Reading from '{file_path}':[/yellow]")
         console.print_code(read_content.strip())
 
-        files = sandbox.list_files("/notes")
-        console.print(f"Files in '/notes': [bold cyan]{files}[/bold cyan]")
+        files = sandbox.list_files("/data/notes")
+        console.print(f"Files in '/data/notes': [bold cyan]{files}[/bold cyan]")
 
         console.print(f"[yellow]Deleting '{file_path}'...[/yellow]")
         sandbox.delete_file(file_path)

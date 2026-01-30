@@ -35,6 +35,22 @@ function isBinaryContent(content: FileContent): content is BinaryContent {
   return typeof content === "object" && "base64" in content;
 }
 
+const DATA_PREFIX = "/data";
+
+/**
+ * Normalize a user-facing path to an AgentFS path.
+ * Strips the /data prefix if present for consistency with bash/Python mounts.
+ */
+function normalizePathToAgentFS(userPath: string): string {
+  if (userPath.startsWith(DATA_PREFIX + "/")) {
+    return userPath.slice(DATA_PREFIX.length);
+  }
+  if (userPath === DATA_PREFIX) {
+    return "/";
+  }
+  return userPath;
+}
+
 function output(data: BashResult | ErrorResult | unknown): void {
   console.log(JSON.stringify(data));
 }
@@ -57,10 +73,9 @@ async function bashCommand(
     // Open AgentFS directly so we can close it properly
     const agent = await AgentFS.open({ path: dbPath });
     try {
-      // To align with Python (which mounts at /data), we need to present
-      // the AgentFS root at /data within the bash environment.
-      // We can achieve this by creating a virtual root that contains 'data'.
-      
+      // Mount AgentFS at /data to match Python's mount point.
+      // File operations (read_file, write_file, etc.) also normalize paths
+      // by stripping the /data prefix for consistency.
       const fs = await agentfs(agent.fs, "/data");
       
       const bash = new Bash({
@@ -114,13 +129,15 @@ async function seedCommand(
 
       // Write files directly using agent.fs
       for (const [path, content] of Object.entries(files)) {
+        // Normalize path to strip /data prefix for consistency
+        const agentPath = normalizePathToAgentFS(path);
         if (isBinaryContent(content)) {
           // Binary content - decode base64 and write as Buffer
           const decoded = Buffer.from(content.base64, "base64");
-          await agent.fs.writeFile(path, decoded);
+          await agent.fs.writeFile(agentPath, decoded);
         } else {
           // Text content - write directly
-          await agent.fs.writeFile(path, content, "utf8");
+          await agent.fs.writeFile(agentPath, content, "utf8");
         }
       }
 
@@ -145,16 +162,42 @@ async function seedCommand(
   }
 }
 
-async function readFileCommand(dbPath: string, path: string): Promise<void> {
+async function readFileCommand(
+  dbPath: string,
+  path: string,
+  binary: boolean = false
+): Promise<void> {
   try {
     const agent = await AgentFS.open({ path: dbPath });
     try {
       const startTime = Date.now();
-      let content: string;
-      let success = true;
+      const agentPath = normalizePathToAgentFS(path);
 
       try {
-        content = await agent.fs.readFile(path, "utf8");
+        if (binary) {
+          const data = await agent.fs.readFile(agentPath);
+          const base64Content = data.toString("base64");
+          const endTime = Date.now();
+          await agent.tools.record(
+            "read_file",
+            startTime,
+            endTime,
+            { path, binary: true },
+            { success: true }
+          );
+          output({ content: base64Content, encoding: "base64" });
+        } else {
+          const content = await agent.fs.readFile(agentPath, "utf8");
+          const endTime = Date.now();
+          await agent.tools.record(
+            "read_file",
+            startTime,
+            endTime,
+            { path },
+            { success: true }
+          );
+          output({ content });
+        }
       } catch (err) {
         const endTime = Date.now();
         await agent.tools.record(
@@ -168,17 +211,6 @@ async function readFileCommand(dbPath: string, path: string): Promise<void> {
         output({ error: message, type: "file_not_found" });
         process.exit(1);
       }
-
-      const endTime = Date.now();
-      await agent.tools.record(
-        "read_file",
-        startTime,
-        endTime,
-        { path },
-        { success }
-      );
-
-      output({ content });
     } finally {
       await agent.close();
     }
@@ -191,24 +223,37 @@ async function readFileCommand(dbPath: string, path: string): Promise<void> {
 async function writeFileCommand(
   dbPath: string,
   path: string,
-  content: string
+  content: string,
+  binary: boolean = false
 ): Promise<void> {
   try {
     const agent = await AgentFS.open({ path: dbPath });
     try {
       const startTime = Date.now();
+      const agentPath = normalizePathToAgentFS(path);
 
-      // writeFile auto-creates parent directories via ensureParentDirs
-      await agent.fs.writeFile(path, content, "utf8");
-
-      const endTime = Date.now();
-      await agent.tools.record(
-        "write_file",
-        startTime,
-        endTime,
-        { path, contentLength: content.length },
-        { success: true }
-      );
+      if (binary) {
+        const data = Buffer.from(content, "base64");
+        await agent.fs.writeFile(agentPath, data);
+        const endTime = Date.now();
+        await agent.tools.record(
+          "write_file",
+          startTime,
+          endTime,
+          { path, contentLength: data.length, binary: true },
+          { success: true }
+        );
+      } else {
+        await agent.fs.writeFile(agentPath, content, "utf8");
+        const endTime = Date.now();
+        await agent.tools.record(
+          "write_file",
+          startTime,
+          endTime,
+          { path, contentLength: content.length },
+          { success: true }
+        );
+      }
 
       output({ success: true });
     } finally {
@@ -226,9 +271,10 @@ async function listFilesCommand(dbPath: string, path: string): Promise<void> {
     try {
       const startTime = Date.now();
       let files: string[];
+      const agentPath = normalizePathToAgentFS(path);
 
       try {
-        files = await agent.fs.readdir(path);
+        files = await agent.fs.readdir(agentPath);
       } catch (err) {
         const endTime = Date.now();
         await agent.tools.record(
@@ -268,9 +314,10 @@ async function existsCommand(dbPath: string, path: string): Promise<void> {
     try {
       const startTime = Date.now();
       let exists = false;
+      const agentPath = normalizePathToAgentFS(path);
 
       try {
-        await agent.fs.stat(path);
+        await agent.fs.stat(agentPath);
         exists = true;
       } catch {
         exists = false;
@@ -300,9 +347,10 @@ async function deleteFileCommand(dbPath: string, path: string): Promise<void> {
     const agent = await AgentFS.open({ path: dbPath });
     try {
       const startTime = Date.now();
+      const agentPath = normalizePathToAgentFS(path);
 
       try {
-        await agent.fs.unlink(path);
+        await agent.fs.unlink(agentPath);
       } catch (err) {
         const endTime = Date.now();
         await agent.tools.record(
@@ -454,7 +502,7 @@ async function main(): Promise<void> {
         options: {
           db: { type: "string" },
           command: { type: "string" },
-          cwd: { type: "string", default: "/home/user" },
+          cwd: { type: "string", default: "/data" },
           limits: { type: "string" },
         },
       });
@@ -475,7 +523,7 @@ async function main(): Promise<void> {
         options: {
           db: { type: "string" },
           code: { type: "string" },
-          cwd: { type: "string", default: "/home/user" },
+          cwd: { type: "string", default: "/data" },
         },
       });
 
@@ -518,6 +566,7 @@ async function main(): Promise<void> {
         options: {
           db: { type: "string" },
           path: { type: "string" },
+          binary: { type: "boolean", default: false },
         },
       });
 
@@ -526,7 +575,7 @@ async function main(): Promise<void> {
         process.exit(1);
       }
 
-      await readFileCommand(values.db, values.path);
+      await readFileCommand(values.db, values.path, values.binary);
       break;
     }
 
@@ -537,6 +586,7 @@ async function main(): Promise<void> {
           db: { type: "string" },
           path: { type: "string" },
           content: { type: "string" },
+          binary: { type: "boolean", default: false },
         },
       });
 
@@ -545,7 +595,7 @@ async function main(): Promise<void> {
         process.exit(1);
       }
 
-      await writeFileCommand(values.db, values.path, values.content);
+      await writeFileCommand(values.db, values.path, values.content, values.binary);
       break;
     }
 

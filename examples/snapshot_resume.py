@@ -8,8 +8,8 @@ def main() -> None:
     snapshot = None
     with LocalSandbox() as sandbox:
         console.print("[green]Session 1: Creating data...[/green]")
-        console.print("[yellow]Running: echo 'session one' > /notes.txt[/yellow]")
-        sandbox.bash('echo "session one" > /notes.txt')
+        console.print("[yellow]Running: echo 'session one' > /data/notes.txt[/yellow]")
+        sandbox.bash('echo "session one" > /data/notes.txt')
         sandbox.kv.set("session_id", "alpha")
 
         console.print("[yellow]Exporting snapshot...[/yellow]")
@@ -18,7 +18,7 @@ def main() -> None:
     console.print("\n[green]Session 2: Resuming from snapshot...[/green]")
     resumed = LocalSandbox(snapshot=snapshot)
     try:
-        content = resumed.read_file("/notes.txt").strip()
+        content = resumed.read_file("/data/notes.txt").strip()
         console.print(f"Read file content: [bold cyan]{content}[/bold cyan]")
 
         session_id = resumed.kv.get("session_id")

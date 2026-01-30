@@ -116,6 +116,22 @@ function getRunnerReadAllowList(fsRoot: string, runnerPath: string): string[] {
   );
 }
 
+function getRunnerWriteAllowList(fsRoot: string, runnerPath: string): string[] {
+  const runnerDir = path.dirname(runnerPath);
+  const shimDir = path.dirname(runnerDir);
+  const allowList = [
+    ...getFsRootAllowList(fsRoot),
+    // Pyodide caches downloaded packages in node_modules
+    path.join(shimDir, "node_modules"),
+  ];
+
+  return Array.from(
+    new Set(
+      allowList.flatMap((entry) => expandAllowedPath(path.resolve(entry)))
+    )
+  );
+}
+
 /**
  * Execute Python code in an isolated subprocess with minimal permissions
  */
@@ -127,13 +143,13 @@ async function runPythonIsolated(
   const runnerPath = getRunnerPath();
   const readAllowList = getRunnerReadAllowList(fsRoot, runnerPath);
   const readAllowArg = `--allow-read=${readAllowList.join(",")}`;
-  const writeAllowList = getFsRootAllowList(fsRoot);
+  const writeAllowList = getRunnerWriteAllowList(fsRoot, runnerPath);
   const writeAllowArg = `--allow-write=${writeAllowList.join(",")}`;
 
   // Spawn python-runner with restricted permissions:
   // - Allow read for temp dir, runner deps, and Deno cache
   // - Allow write only to the specific temp directory
-  // - No network access
+  // - Allow network only to Pyodide CDN for loading bundled packages
   // - No FFI
   // - No environment access (except HOME for Deno cache location)
   const proc = spawn(
@@ -143,6 +159,7 @@ async function runPythonIsolated(
       readAllowArg,
       writeAllowArg,
       "--allow-env=HOME,DENO_DIR,XDG_CACHE_HOME",
+      "--allow-net=cdn.jsdelivr.net",
       "--no-prompt",
       runnerPath,
     ],
