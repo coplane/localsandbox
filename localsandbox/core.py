@@ -674,7 +674,12 @@ class LocalSandbox:
         content = base64.b64encode(data).decode("ascii")
         result = self._run_shim(
             "write-file",
-            {"db": str(self._db_path), "path": path, "content": content, "binary": True},
+            {
+                "db": str(self._db_path),
+                "path": path,
+                "content": content,
+                "binary": True,
+            },
         )
 
         if result.returncode != 0:
