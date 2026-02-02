@@ -74,7 +74,10 @@ def main() -> None:
     with LocalSandbox(files={"/data/receipt.jpg": receipt_path}) as sandbox:
         console.print("\n[yellow]Executing Python code with PIL...[/yellow]")
 
-        result = sandbox.execute_python(PYTHON_CODE)
+        result = sandbox.execute_python(
+            PYTHON_CODE,
+            preload_packages=["pillow"],
+        )
 
         if result.exit_code != 0:
             console.print(f"[bold red]Execution failed:[/bold red]\n{result.stderr}")

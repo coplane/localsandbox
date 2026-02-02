@@ -169,6 +169,15 @@ The sandbox filesystem is mounted at `/data` in both bash and Python
 environments. All paths should use the `/data` prefix for consistency across all
 operations.
 
+Optional package preloading:
+
+```python
+result = sandbox.execute_python(
+    "from PIL import Image; print(Image.__name__)",
+    preload_packages=["pillow"],
+)
+```
+
 ### PythonResult
 
 ```python

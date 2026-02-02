@@ -125,12 +125,19 @@ Raises:
 #### Python Execution
 
 ```python
-sandbox.execute_python(code: str, cwd: str | None = None) -> PythonResult
+sandbox.execute_python(
+    code: str,
+    cwd: str | None = None,
+    preload_packages: list[str] | None = None,
+) -> PythonResult
 ```
 
 Execute Python via Pyodide. The sandbox filesystem is mounted at `/data` in both
 bash and Python environments. All paths should use the `/data` prefix for
 consistency across all operations (bash, Python, and file helpers).
+
+If `preload_packages` is provided, those Pyodide packages are loaded before
+execution. No network access is granted unless preloading is requested.
 
 #### File Operations
 

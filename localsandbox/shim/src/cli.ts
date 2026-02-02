@@ -525,6 +525,7 @@ async function main(): Promise<void> {
           db: { type: "string" },
           code: { type: "string" },
           cwd: { type: "string", default: "/data" },
+          preload: { type: "string" },
         },
       });
 
@@ -534,7 +535,19 @@ async function main(): Promise<void> {
       }
 
       try {
-        const result = await executePython(values.db, values.code, values.cwd!);
+        let preloadPackages: string[] | undefined;
+        if (values.preload) {
+          const trimmed = values.preload.trim();
+          preloadPackages = trimmed.startsWith("[")
+            ? JSON.parse(trimmed)
+            : trimmed.split(",").map((item) => item.trim()).filter(Boolean);
+        }
+        const result = await executePython(
+          values.db,
+          values.code,
+          values.cwd!,
+          preloadPackages
+        );
         output(result);
       } catch (error) {
         outputError(error, "python_error");

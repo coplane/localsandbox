@@ -872,7 +872,12 @@ class LocalSandbox:
             for e in entries
         ]
 
-    def execute_python(self, code: str, cwd: str | None = None) -> PythonResult:
+    def execute_python(
+        self,
+        code: str,
+        cwd: str | None = None,
+        preload_packages: list[str] | None = None,
+    ) -> PythonResult:
         """
         Execute Python code in the sandbox using Pyodide.
 
@@ -883,6 +888,7 @@ class LocalSandbox:
         Args:
             code: The Python code to execute.
             cwd: Working directory for Python (default: sandbox cwd).
+            preload_packages: Optional list of Pyodide packages to preload.
 
         Returns:
             PythonResult with stdout, stderr, exit_code, and optional error.
@@ -902,6 +908,7 @@ class LocalSandbox:
                 "db": str(self._db_path),
                 "code": code,
                 "cwd": effective_cwd,
+                "preload": (json.dumps(preload_packages) if preload_packages else None),
             },
             timeout=300,  # Python can be slow, especially first load
         )
@@ -1022,9 +1029,19 @@ class LocalSandbox:
         """Async version of history()."""
         return await asyncio.to_thread(self.history, limit)
 
-    async def aexecute_python(self, code: str, cwd: str | None = None) -> PythonResult:
+    async def aexecute_python(
+        self,
+        code: str,
+        cwd: str | None = None,
+        preload_packages: list[str] | None = None,
+    ) -> PythonResult:
         """Async version of execute_python()."""
-        return await asyncio.to_thread(self.execute_python, code, cwd)
+        return await asyncio.to_thread(
+            self.execute_python,
+            code,
+            cwd,
+            preload_packages,
+        )
 
     async def adestroy(self) -> None:
         """Async version of destroy()."""

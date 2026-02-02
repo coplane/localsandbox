@@ -174,8 +174,9 @@ print(asyncio.get_event_loop().run_until_complete(test_net()))
 
         with LocalSandbox(files={"/data/receipt.jpg": receipt_path}) as sandbox:
             # Crop a 200x200 region from the top-left corner
-            # PIL is preloaded in the Pyodide environment
-            result = sandbox.execute_python("""
+            # PIL is preloaded via preload_packages
+            result = sandbox.execute_python(
+                """
 from PIL import Image
 import base64
 
@@ -193,7 +194,9 @@ with open('/data/cropped.jpg', 'rb') as f:
     data = f.read()
 print(f"SIZE:{len(data)}")
 print(f"DATA:{base64.b64encode(data).decode('ascii')}")
-""")
+""",
+                preload_packages=["pillow"],
+            )
             assert result.exit_code == 0, f"Python execution failed: {result.stderr}"
 
             # Parse the output
@@ -226,7 +229,8 @@ print(f"DATA:{base64.b64encode(data).decode('ascii')}")
         """Test that Python can create and read PDFs using PyMuPDF."""
         with LocalSandbox() as sandbox:
             # Create a PDF with text, save it, then read it back
-            result = sandbox.execute_python("""
+            result = sandbox.execute_python(
+                """
 import fitz  # PyMuPDF
 
 # Create a new PDF document
@@ -252,7 +256,9 @@ doc2.close()
 
 print(f"PAGES:{page_count}")
 print(f"TEXT:{extracted_text.strip()}")
-""")
+""",
+                preload_packages=["pymupdf"],
+            )
             assert result.exit_code == 0, f"Python execution failed: {result.stderr}"
 
             lines = result.stdout.strip().split("\n")
