@@ -1,10 +1,14 @@
 # LocalSandbox Python SDK Specification
 
-A Python SDK that wraps [just-bash](https://github.com/vercel-labs/just-bash) and [AgentFS](https://github.com/tursodatabase/agentfs) to provide sandboxed filesystem operations for AI agents.
+A Python SDK that wraps [just-bash](https://github.com/vercel-labs/just-bash)
+and [AgentFS](https://github.com/tursodatabase/agentfs) to provide sandboxed
+filesystem operations for AI agents.
 
 ## Overview
 
-LocalSandbox enables Python-based AI agents to safely execute bash commands within an isolated, persistent filesystem. The SDK bridges Python to the JavaScript-based just-bash and AgentFS libraries, providing:
+LocalSandbox enables Python-based AI agents to safely execute bash commands
+within an isolated, persistent filesystem. The SDK bridges Python to the
+JavaScript-based just-bash and AgentFS libraries, providing:
 
 - Sandboxed bash command execution (no network, no binary execution)
 - Persistent filesystem state via AgentFS SQLite backend
@@ -17,8 +21,8 @@ LocalSandbox enables Python-based AI agents to safely execute bash commands with
 
 ### TypeScript Shim Model
 
-LocalSandbox uses a Deno-based TypeScript CLI shim (`localsandbox-shim`) that bridges Python
-to just-bash and AgentFS:
+LocalSandbox uses a Deno-based TypeScript CLI shim (`localsandbox-shim`) that
+bridges Python to just-bash and AgentFS:
 
 ```
 ┌─────────────────┐     subprocess      ┌─────────────────────────────────┐
@@ -35,13 +39,16 @@ to just-bash and AgentFS:
 ```
 
 **How it works:**
+
 1. Python creates a temp SQLite database file per `LocalSandbox` instance
 2. Each `bash()` call invokes the shim CLI with the database path
-3. The shim opens AgentFS with that database, creates a just-bash instance with the AgentFS filesystem
+3. The shim opens AgentFS with that database, creates a just-bash instance with
+   the AgentFS filesystem
 4. Command executes, changes persist to SQLite automatically
 5. Shim returns JSON result to Python
 
 **Why this model:**
+
 - AgentFS provides a filesystem adapter for just-bash (`agentfs-sdk/just-bash`)
 - All state (files, KV, audit trail) lives in a single SQLite file
 - Snapshots are just the SQLite file bytes - trivially portable
@@ -49,7 +56,9 @@ to just-bash and AgentFS:
 
 ### Concurrency Model
 
-Each `LocalSandbox` instance owns its own SQLite database file. No sharing between instances, no race conditions. Users requiring concurrent access should create separate sandbox instances.
+Each `LocalSandbox` instance owns its own SQLite database file. No sharing
+between instances, no race conditions. Users requiring concurrent access should
+create separate sandbox instances.
 
 ## Project Structure
 
@@ -73,12 +82,15 @@ localsandbox/
 ## Dependencies
 
 **Python package dependencies:**
+
 - Python 3.12+
 
 **Bundled with package:**
+
 - TypeScript shim (`shim/`) - executed by Deno
 
 **Runtime prerequisites** (user must have installed):
+
 - Deno (with npm compatibility)
 
 The shim is run directly from TypeScript; Deno caches npm dependencies locally.
@@ -92,14 +104,15 @@ from localsandbox import LocalSandbox, ExecutionPreset
 from pathlib import Path
 
 # Create a sandbox with initial files
+# All paths use the /data prefix for consistency with bash and Python
 sandbox = LocalSandbox(
     files={
-        '/home/user/main.py': 'print("hello")',
-        '/home/user/data.json': Path('./local/data.json'),  # snapshot from local
-        '/home/user/image.png': b'\\x89PNG...',             # binary content
+        '/data/main.py': 'print("hello")',
+        '/data/data.json': Path('./local/data.json'),  # snapshot from local
+        '/data/image.png': b'\\x89PNG...',             # binary content
     },
     preset=ExecutionPreset.NORMAL,  # or STRICT, PERMISSIVE
-    cwd='/home/user',  # default
+    cwd='/data',  # default working directory
 )
 
 # Execute bash commands
@@ -113,12 +126,12 @@ sandbox.destroy()
 
 ### Constructor Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `files` | `dict[str, str \| Path \| bytes]` | `{}` | Initial filesystem contents. String values are file content, `Path` values are read and snapshotted at creation, `bytes` are written as binary. |
-| `preset` | `ExecutionPreset` | `NORMAL` | Execution limits preset |
-| `cwd` | `str` | `'/home/user'` | Initial working directory |
-| `snapshot` | `bytes \| None` | `None` | Resume from a previously exported AgentFS snapshot. Mutually exclusive with `files`. |
+| Parameter  | Type                              | Default   | Description                                                                                                                                                                       |
+| ---------- | --------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `files`    | `dict[str, str \| Path \| bytes]` | `{}`      | Initial filesystem contents. String values are file content, `Path` values are read and snapshotted at creation, `bytes` are written as binary. Paths should use `/data/` prefix. |
+| `preset`   | `ExecutionPreset`                 | `NORMAL`  | Execution limits preset                                                                                                                                                           |
+| `cwd`      | `str`                             | `'/data'` | Initial working directory                                                                                                                                                         |
+| `snapshot` | `bytes \| None`                   | `None`    | Resume from a previously exported AgentFS snapshot. Mutually exclusive with `files`.                                                                                              |
 
 ### ExecutionPreset
 
@@ -129,7 +142,8 @@ class ExecutionPreset(Enum):
     PERMISSIVE = "permissive"  # 10,000 loop iterations, 50,000 commands max
 ```
 
-`STRICT` is ultra-conservative - fail fast, never hang. Use for untrusted agent inputs.
+`STRICT` is ultra-conservative - fail fast, never hang. Use for untrusted agent
+inputs.
 
 ### BashResult
 
@@ -142,16 +156,18 @@ class BashResult:
     duration_ms: float
 ```
 
-On success, `exit_code == 0`. On failure, a structured exception is raised instead of returning.
+On success, `exit_code == 0`. On failure, a structured exception is raised
+instead of returning.
 
 ### Python Execution
 
 ```python
-result = sandbox.execute_python("print('hello')", cwd="/home/user")
+result = sandbox.execute_python("print('hello')", cwd="/data")
 ```
 
-Inside Python, the sandbox filesystem is mounted at `/data`. Use absolute paths
-under `/data` or pass `cwd` and use relative paths.
+The sandbox filesystem is mounted at `/data` in both bash and Python
+environments. All paths should use the `/data` prefix for consistency across all
+operations.
 
 ### PythonResult
 
@@ -198,7 +214,9 @@ class SubprocessCrashed(LocalSandboxError):
     signal: int | None
 ```
 
-Common errors (file not found, permission denied, timeout) are parsed from stderr and raised as typed exceptions. Unknown errors raise `CommandError` with raw stderr.
+Common errors (file not found, permission denied, timeout) are parsed from
+stderr and raised as typed exceptions. Unknown errors raise `CommandError` with
+raw stderr.
 
 ## File Helper Methods
 
@@ -206,22 +224,24 @@ Convenience methods for direct filesystem access without bash:
 
 ```python
 # Read file contents
-content: str = sandbox.read_file('/home/user/main.py')
+content: str = sandbox.read_file('/data/main.py')
 
 # Write file contents
-sandbox.write_file('/home/user/output.txt', 'new content')
+sandbox.write_file('/data/output.txt', 'new content')
 
 # List directory
-files: list[str] = sandbox.list_files('/home/user')
+files: list[str] = sandbox.list_files('/data')
 
 # Check existence
-exists: bool = sandbox.exists('/home/user/main.py')
+exists: bool = sandbox.exists('/data/main.py')
 
 # Delete file
-sandbox.delete_file('/home/user/temp.txt')
+sandbox.delete_file('/data/temp.txt')
 ```
 
-These methods invoke the shim with specific operations (not bash commands) for direct AgentFS access.
+All paths use the `/data` prefix for consistency with bash and Python execution.
+These methods invoke the shim with specific operations (not bash commands) for
+direct AgentFS access.
 
 ## Snapshot & Resume
 
@@ -243,17 +263,21 @@ with open('agent_state.db', 'rb') as f:
 resumed_sandbox = LocalSandbox(snapshot=saved_snapshot)
 
 # Continues where it left off - all files and KV state preserved
-result = resumed_sandbox.bash('ls /home/user')
+result = resumed_sandbox.bash('ls /data')
 ```
 
-The `snapshot` parameter is mutually exclusive with `files`. If both are provided, a `ValueError` is raised.
+The `snapshot` parameter is mutually exclusive with `files`. If both are
+provided, a `ValueError` is raised.
 
 The exported snapshot includes:
+
 - All filesystem contents
 - KV store data
 - Audit trail history
 
-**Implementation:** `export_snapshot()` simply reads the SQLite database file as bytes. Resuming writes those bytes to a new temp file and opens AgentFS with that path.
+**Implementation:** `export_snapshot()` simply reads the SQLite database file as
+bytes. Resuming writes those bytes to a new temp file and opens AgentFS with
+that path.
 
 ## Key-Value Store
 
@@ -269,9 +293,11 @@ sandbox.kv.delete('conversation_id')
 keys: list[str] = sandbox.kv.keys()
 ```
 
-Values are strings only. Users must serialize/deserialize complex objects themselves.
+Values are strings only. Users must serialize/deserialize complex objects
+themselves.
 
-KV operations invoke the shim with specific KV commands, which use AgentFS's built-in KV store.
+KV operations invoke the shim with specific KV commands, which use AgentFS's
+built-in KV store.
 
 ## Async Support
 
@@ -341,13 +367,16 @@ sandbox.destroy()
 - Instance marked as destroyed
 - Subsequent operations raise `RuntimeError`
 
-Instances are **one-shot only**. After `destroy()`, create a new `LocalSandbox` instance.
+Instances are **one-shot only**. After `destroy()`, create a new `LocalSandbox`
+instance.
 
 ### Expected Lifespan
 
-Designed for **per-conversation** usage: create a sandbox at conversation start, accumulate state across agent turns, destroy at conversation end.
+Designed for **per-conversation** usage: create a sandbox at conversation start,
+accumulate state across agent turns, destroy at conversation end.
 
-For **cross-session persistence**, export a snapshot before destroying and resume from it later.
+For **cross-session persistence**, export a snapshot before destroying and
+resume from it later.
 
 ## Network Access
 
@@ -361,15 +390,18 @@ write results to the sandbox filesystem.
 
 ### No Custom Commands
 
-just-bash's `defineCommand()` for custom TypeScript handlers is not exposed. Use the 70+ built-in commands only.
+just-bash's `defineCommand()` for custom TypeScript handlers is not exposed. Use
+the 70+ built-in commands only.
 
 ### No Binary Execution
 
-just-bash cannot execute actual binaries or WASM. Commands like `grep`, `sed`, `awk` are TypeScript reimplementations.
+just-bash cannot execute actual binaries or WASM. Commands like `grep`, `sed`,
+`awk` are TypeScript reimplementations.
 
 ### Subprocess Latency
 
-Each `bash()` call spawns a Deno process. Expect ~50-200ms overhead per call. Batch operations when possible:
+Each `bash()` call spawns a Deno process. Expect ~50-200ms overhead per call.
+Batch operations when possible:
 
 ```python
 # Prefer this
@@ -383,7 +415,8 @@ sandbox.bash('cat file2.txt')
 
 ### SQLite File Location
 
-AgentFS SQLite files are created in the system temp directory. Users cannot currently specify a custom location.
+AgentFS SQLite files are created in the system temp directory. Users cannot
+currently specify a custom location.
 
 ## Shim CLI Interface
 
@@ -425,7 +458,8 @@ All commands output JSON to stdout.
 
 ## Usage with Agent Frameworks
 
-LocalSandbox methods are plain Python functions. Users wrap them with their framework's tool decorators:
+LocalSandbox methods are plain Python functions. Users wrap them with their
+framework's tool decorators:
 
 ### With LangChain
 
@@ -476,26 +510,27 @@ from localsandbox import LocalSandbox, ExecutionPreset
 from pathlib import Path
 
 # Create sandbox with project files
+# All paths use /data prefix for consistency
 sandbox = LocalSandbox(
     files={
-        '/project/src/main.py': Path('./src/main.py'),
-        '/project/src/utils.py': Path('./src/utils.py'),
-        '/project/tests/test_main.py': Path('./tests/test_main.py'),
+        '/data/project/src/main.py': Path('./src/main.py'),
+        '/data/project/src/utils.py': Path('./src/utils.py'),
+        '/data/project/tests/test_main.py': Path('./tests/test_main.py'),
     },
     preset=ExecutionPreset.NORMAL,
 )
 
 # Agent can now explore
-result = sandbox.bash('find /project -name "*.py" | head -20')
-result = sandbox.bash('grep -r "def " /project/src | wc -l')
-result = sandbox.bash('cat /project/src/main.py | head -50')
+result = sandbox.bash('find /data/project -name "*.py" | head -20')
+result = sandbox.bash('grep -r "def " /data/project/src | wc -l')
+result = sandbox.bash('cat /data/project/src/main.py | head -50')
 
 # Agent can write analysis
-sandbox.bash('echo "# Analysis Report" > /project/analysis.md')
-sandbox.bash('echo "Found $(grep -r "TODO" /project | wc -l) TODOs" >> /project/analysis.md')
+sandbox.bash('echo "# Analysis Report" > /data/project/analysis.md')
+sandbox.bash('echo "Found $(grep -r "TODO" /data/project | wc -l) TODOs" >> /data/project/analysis.md')
 
 # Retrieve results
-report = sandbox.read_file('/project/analysis.md')
+report = sandbox.read_file('/data/project/analysis.md')
 
 sandbox.destroy()
 ```
@@ -513,7 +548,7 @@ def get_or_create_sandbox(session_id: str) -> LocalSandbox:
     snapshot = r.get(f"sandbox:{session_id}")
     if snapshot:
         return LocalSandbox(snapshot=snapshot)
-    return LocalSandbox(files={'/workspace/notes.txt': ''})
+    return LocalSandbox(files={'/data/workspace/notes.txt': ''})
 
 def save_sandbox(session_id: str, sandbox: LocalSandbox):
     """Persist sandbox state to Redis."""
@@ -523,12 +558,12 @@ def save_sandbox(session_id: str, sandbox: LocalSandbox):
 
 # Usage in an agent loop
 sandbox = get_or_create_sandbox("user-123")
-sandbox.bash('echo "Meeting notes from today" >> /workspace/notes.txt')
+sandbox.bash('echo "Meeting notes from today" >> /data/workspace/notes.txt')
 save_sandbox("user-123", sandbox)
 
 # Later, in another process/session
 sandbox = get_or_create_sandbox("user-123")
-result = sandbox.bash('cat /workspace/notes.txt')  # Contains previous notes
+result = sandbox.bash('cat /data/workspace/notes.txt')  # Contains previous notes
 ```
 
 ## Testing
@@ -541,21 +576,21 @@ from localsandbox import LocalSandbox
 
 def test_file_creation():
     sandbox = LocalSandbox()
-    sandbox.bash('echo "test" > /home/user/test.txt')
+    sandbox.bash('echo "test" > /data/test.txt')
 
-    content = sandbox.read_file('/home/user/test.txt')
+    content = sandbox.read_file('/data/test.txt')
     assert content.strip() == "test"
 
     sandbox.destroy()
 
 @pytest.fixture
 def sandbox():
-    s = LocalSandbox(files={'/home/user/data.txt': 'initial'})
+    s = LocalSandbox(files={'/data/data.txt': 'initial'})
     yield s
     s.destroy()
 
 def test_with_fixture(sandbox):
-    result = sandbox.bash('cat /home/user/data.txt')
+    result = sandbox.bash('cat /data/data.txt')
     assert result.stdout.strip() == 'initial'
 ```
 
@@ -567,4 +602,5 @@ def test_with_fixture(sandbox):
 - Lazy file loading for large filesystems
 - Mock implementation for faster tests
 - Streaming output for long-running commands
-- Persistent shim process for reduced latency (IPC instead of subprocess per call)
+- Persistent shim process for reduced latency (IPC instead of subprocess per
+  call)
