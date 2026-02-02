@@ -908,9 +908,7 @@ class LocalSandbox:
                 "db": str(self._db_path),
                 "code": code,
                 "cwd": effective_cwd,
-                "preload": (
-                    json.dumps(preload_packages) if preload_packages else None
-                ),
+                "preload": (json.dumps(preload_packages) if preload_packages else None),
             },
             timeout=300,  # Python can be slow, especially first load
         )
