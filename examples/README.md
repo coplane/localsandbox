@@ -9,6 +9,7 @@ python examples/basic_usage.py
 Scripts:
 - `basic_usage.py`: Basic bash + file helper usage.
 - `python_roundtrip.py`: Run Python via Pyodide and read/write sandbox files.
+- `python_image_processing.py`: PIL image processing (resize, crop, grayscale, blur).
 - `snapshot_resume.py`: Export a snapshot and resume a new sandbox.
 - `kv_and_history.py`: Use the KV store and inspect tool history.
 

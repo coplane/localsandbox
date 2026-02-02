@@ -15,6 +15,7 @@ interface RunnerInput {
   fsRoot: string;
   code: string;
   cwd: string;
+  preloadPackages?: string[];
 }
 
 interface RunnerOutput {
@@ -27,27 +28,41 @@ interface RunnerOutput {
 let pyodide: PyodideInterface | null = null;
 let capturedStdout = "";
 let capturedStderr = "";
+const loadedPackages = new Set<string>();
 
 async function getPyodide(): Promise<PyodideInterface> {
   if (!pyodide) {
     pyodide = await loadPyodide({
-      stdout: (msg) => {
-        capturedStdout += msg + "\n";
-      },
-      stderr: (msg) => {
-        capturedStderr += msg + "\n";
-      },
+      stdout: (msg) => capturedStdout += msg + "\n",
+      stderr: (msg) => capturedStderr += msg + "\n",
     });
   }
   return pyodide;
 }
 
+async function preloadPackages(
+  py: PyodideInterface,
+  packages: string[]
+): Promise<void> {
+  for (const pkg of packages) {
+    if (loadedPackages.has(pkg)) {
+      continue;
+    }
+    await py.loadPackage(pkg, { messageCallback: () => {} });
+    loadedPackages.add(pkg);
+  }
+}
+
 async function runPython(input: RunnerInput): Promise<RunnerOutput> {
-  // Reset captured output
+  // Reset captured output and enable capture
   capturedStdout = "";
   capturedStderr = "";
 
   const py = await getPyodide();
+  const preloadPackagesList = input.preloadPackages ?? [];
+  if (preloadPackagesList.length > 0) {
+    await preloadPackages(py, preloadPackagesList);
+  }
   const mountPoint = "/data";
 
   // Ensure mount point exists
@@ -69,9 +84,16 @@ async function runPython(input: RunnerInput): Promise<RunnerOutput> {
 
   try {
     // Set working directory
-    const pyCwd = input.cwd.startsWith("/")
-      ? `${mountPoint}${input.cwd}`
-      : `${mountPoint}/${input.cwd}`;
+    // Normalize cwd: strip /data prefix if present (will be re-added by mountPoint)
+    let normalizedCwd = input.cwd;
+    if (normalizedCwd.startsWith(mountPoint + "/")) {
+      normalizedCwd = normalizedCwd.slice(mountPoint.length);
+    } else if (normalizedCwd === mountPoint) {
+      normalizedCwd = "/";
+    }
+    const pyCwd = normalizedCwd.startsWith("/")
+      ? `${mountPoint}${normalizedCwd}`
+      : `${mountPoint}/${normalizedCwd}`;
 
     py.globals.set("_localsandbox_cwd", pyCwd);
     py.globals.set("_localsandbox_mount_point", mountPoint);

@@ -116,24 +116,45 @@ function getRunnerReadAllowList(fsRoot: string, runnerPath: string): string[] {
   );
 }
 
+function getRunnerWriteAllowList(fsRoot: string, runnerPath: string): string[] {
+  const runnerDir = path.dirname(runnerPath);
+  const shimDir = path.dirname(runnerDir);
+  const allowList = [
+    ...getFsRootAllowList(fsRoot),
+    // Pyodide caches downloaded packages in node_modules
+    path.join(shimDir, "node_modules"),
+  ];
+
+  return Array.from(
+    new Set(
+      allowList.flatMap((entry) => expandAllowedPath(path.resolve(entry)))
+    )
+  );
+}
+
 /**
  * Execute Python code in an isolated subprocess with minimal permissions
  */
 async function runPythonIsolated(
   fsRoot: string,
   code: string,
-  cwd: string
+  cwd: string,
+  preloadPackages?: string[]
 ): Promise<PythonResult> {
   const runnerPath = getRunnerPath();
   const readAllowList = getRunnerReadAllowList(fsRoot, runnerPath);
   const readAllowArg = `--allow-read=${readAllowList.join(",")}`;
-  const writeAllowList = getFsRootAllowList(fsRoot);
+  const writeAllowList = getRunnerWriteAllowList(fsRoot, runnerPath);
   const writeAllowArg = `--allow-write=${writeAllowList.join(",")}`;
+  const allowNetArg =
+    preloadPackages && preloadPackages.length > 0
+      ? "--allow-net=cdn.jsdelivr.net"
+      : null;
 
   // Spawn python-runner with restricted permissions:
   // - Allow read for temp dir, runner deps, and Deno cache
   // - Allow write only to the specific temp directory
-  // - No network access
+  // - Allow network only to Pyodide CDN for loading bundled packages
   // - No FFI
   // - No environment access (except HOME for Deno cache location)
   const proc = spawn(
@@ -143,6 +164,7 @@ async function runPythonIsolated(
       readAllowArg,
       writeAllowArg,
       "--allow-env=HOME,DENO_DIR,XDG_CACHE_HOME",
+      ...(allowNetArg ? [allowNetArg] : []),
       "--no-prompt",
       runnerPath,
     ],
@@ -153,7 +175,12 @@ async function runPythonIsolated(
   );
 
   return new Promise((resolve, reject) => {
-    const input = JSON.stringify({ fsRoot, code, cwd });
+    const input = JSON.stringify({
+      fsRoot,
+      code,
+      cwd,
+      preloadPackages,
+    });
     let stdout = "";
     let stderr = "";
 
@@ -197,7 +224,8 @@ async function runPythonIsolated(
 async function executePythonWithFuse(
   dbPath: string,
   code: string,
-  cwd: string
+  cwd: string,
+  preloadPackages?: string[]
 ): Promise<PythonResult> {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "localsandbox-python-"));
   const mountPoint = path.join(tempDir, "mnt");
@@ -211,14 +239,23 @@ async function executePythonWithFuse(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    // Wait for mount to be ready
-    const mounted = await waitForMount(mountPoint);
+    const mountErrorPromise = new Promise<never>((_, reject) => {
+      mountProcess?.once("error", (err) => {
+        reject(err);
+      });
+    });
+
+    // Wait for mount to be ready (or fail fast on spawn errors)
+    const mounted = await Promise.race([
+      waitForMount(mountPoint),
+      mountErrorPromise,
+    ]);
     if (!mounted) {
       throw new Error("Failed to mount AgentFS via FUSE");
     }
 
     // Run Python in isolated subprocess with the mounted filesystem
-    return await runPythonIsolated(mountPoint, code, cwd);
+    return await runPythonIsolated(mountPoint, code, cwd, preloadPackages);
   } finally {
     // Cleanup: kill mount process
     if (mountProcess) {
@@ -240,7 +277,8 @@ async function executePythonWithFuse(
 async function executePythonWithSync(
   agent: AgentFS,
   code: string,
-  cwd: string
+  cwd: string,
+  preloadPackages?: string[]
 ): Promise<PythonResult> {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "localsandbox-python-"));
 
@@ -249,7 +287,7 @@ async function executePythonWithSync(
     await syncAgentFSToDir(agent.fs, tempDir);
 
     // Run Python in isolated subprocess with the synced filesystem
-    const result = await runPythonIsolated(tempDir, code, cwd);
+    const result = await runPythonIsolated(tempDir, code, cwd, preloadPackages);
 
     // Sync changes back to AgentFS
     await syncDirToAgentFS(tempDir, agent.fs);
@@ -385,7 +423,8 @@ function sleep(ms: number): Promise<void> {
 export async function executePython(
   dbPath: string,
   code: string,
-  cwd: string
+  cwd: string,
+  preloadPackages?: string[]
 ): Promise<PythonResult> {
   const agent = await AgentFS.open({ path: dbPath });
   const startTime = Date.now();
@@ -396,15 +435,15 @@ export async function executePython(
     if (isFuseAvailable()) {
       // Try FUSE approach on Linux
       try {
-        result = await executePythonWithFuse(dbPath, code, cwd);
+        result = await executePythonWithFuse(dbPath, code, cwd, preloadPackages);
       } catch (fuseError) {
         // Fall back to sync approach if FUSE fails
         console.error("FUSE mount failed, falling back to sync:", fuseError);
-        result = await executePythonWithSync(agent, code, cwd);
+        result = await executePythonWithSync(agent, code, cwd, preloadPackages);
       }
     } else {
       // Use sync approach on non-Linux platforms
-      result = await executePythonWithSync(agent, code, cwd);
+      result = await executePythonWithSync(agent, code, cwd, preloadPackages);
     }
 
     const endTime = Date.now();
@@ -414,7 +453,7 @@ export async function executePython(
       "python",
       startTime,
       endTime,
-      { codeLength: code.length, cwd },
+      { codeLength: code.length, cwd, preloadPackages },
       { exitCode: result.exitCode }
     );
 

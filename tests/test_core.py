@@ -5,11 +5,11 @@ from collections.abc import Generator
 import pytest
 
 from localsandbox import (
-    LocalSandbox,
     CommandError,
     ExecutionLimitError,
     ExecutionPreset,
     FileNotFoundError,
+    LocalSandbox,
 )
 
 
@@ -266,6 +266,19 @@ class TestLocalSandboxAsync:
             sandbox.destroy()
 
     @pytest.mark.asyncio
+    async def test_async_file_bytes_helpers(self) -> None:
+        """Test async binary file helper methods."""
+        sandbox = LocalSandbox()
+        try:
+            binary_data = bytes(range(256))
+            await sandbox.awrite_file_bytes("/home/user/async.bin", binary_data)
+            content = await sandbox.aread_file_bytes("/home/user/async.bin")
+            assert content == binary_data
+            assert len(content) == 256
+        finally:
+            sandbox.destroy()
+
+    @pytest.mark.asyncio
     async def test_async_kv(self) -> None:
         """Test async KV store methods."""
         sandbox = LocalSandbox()
@@ -364,7 +377,7 @@ class TestHistory:
             entry = history[0]
             assert entry.parameters is not None
             assert entry.parameters.get("command") == 'echo "test"'
-            assert entry.parameters.get("cwd") == "/home/user"
+            assert entry.parameters.get("cwd") == "/data"
 
     def test_history_includes_exit_code(self) -> None:
         """Test that history entries include the exit code in result."""

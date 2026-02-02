@@ -1,7 +1,7 @@
 # LocalSandbox
 
 A Python SDK for sandboxed filesystem operations, built on
-[just-bash](https://github.com/nicholasgriffintn/just-bash),
+[just-bash](https://github.com/vercel-labs/just-bash),
 [AgentFS](https://github.com/tursodatabase/agentfs), and
 [Pyodide](https://pyodide.org/). Provides AI agents with a persistent, isolated
 environment backed by SQLite.
@@ -57,12 +57,12 @@ try:
 finally:
     sandbox.destroy()
 
-# Seed initial files
-with LocalSandbox(files={"/app/main.py": 'print("hello")'}) as sandbox:
-    result = sandbox.execute_python('exec(open("main.py").read())', cwd="/app")
+# Seed initial files (all paths use /data prefix)
+with LocalSandbox(files={"/data/app/main.py": 'print("hello")'}) as sandbox:
+    result = sandbox.execute_python('exec(open("main.py").read())', cwd="/data/app")
     print(result.stdout)  # hello
 
-# Use file helpers
+# Use file helpers (all paths use /data prefix)
 with LocalSandbox() as sandbox:
     sandbox.write_file("/data/config.json", '{"key": "value"}')
     content = sandbox.read_file("/data/config.json")
@@ -88,7 +88,7 @@ More runnable scripts are in `examples/`.
 LocalSandbox(
     files: dict[str, str | Path | bytes] | None = None,
     snapshot: bytes | None = None,
-    cwd: str = "/home/user",
+    cwd: str = "/data",
     preset: ExecutionPreset = ExecutionPreset.NORMAL,
 )
 ```
@@ -96,10 +96,11 @@ LocalSandbox(
 **Parameters:**
 
 - `files`: Initial filesystem contents. Supports string content, `Path` objects
-  (read at creation), or `bytes` for binary files.
+  (read at creation), or `bytes` for binary files. All paths should use the
+  `/data` prefix.
 - `snapshot`: Restore from a previously exported snapshot (mutually exclusive
   with `files`).
-- `cwd`: Initial working directory (default: `/home/user`).
+- `cwd`: Initial working directory (default: `/data`).
 - `preset`: Execution limits preset (`STRICT`, `NORMAL`, or `PERMISSIVE`).
 
 ### Methods
@@ -124,13 +125,19 @@ Raises:
 #### Python Execution
 
 ```python
-sandbox.execute_python(code: str, cwd: str | None = None) -> PythonResult
+sandbox.execute_python(
+    code: str,
+    cwd: str | None = None,
+    preload_packages: list[str] | None = None,
+) -> PythonResult
 ```
 
-Execute Python via Pyodide. The sandbox filesystem is mounted at `/data` inside
-Python; `cwd` controls where relative paths resolve. In bash, `/data` is also
-available as an alias to the sandbox root, so `/data/...` and `/...` refer to
-the same files.
+Execute Python via Pyodide. The sandbox filesystem is mounted at `/data` in both
+bash and Python environments. All paths should use the `/data` prefix for
+consistency across all operations (bash, Python, and file helpers).
+
+If `preload_packages` is provided, those Pyodide packages are loaded before
+execution. No network access is granted unless preloading is requested.
 
 #### File Operations
 
@@ -207,8 +214,8 @@ async def main():
     sandbox = LocalSandbox()
     try:
         result = await sandbox.abash('echo "async!"')
-        await sandbox.awrite_file("/tmp/test.txt", "content")
-        content = await sandbox.aread_file("/tmp/test.txt")
+        await sandbox.awrite_file("/data/tmp/test.txt", "content")
+        content = await sandbox.aread_file("/data/tmp/test.txt")
         await sandbox.kv.aset("key", "value")
         value = await sandbox.kv.aget("key")
     finally:

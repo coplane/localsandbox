@@ -11,6 +11,16 @@ with LocalSandbox() as sandbox:
     result = sandbox.execute_python('print(open("/data/data.txt").read())')  # prints "hello"
 ```
 
+Optional package preloading:
+
+```python
+with LocalSandbox() as sandbox:
+    result = sandbox.execute_python(
+        "from PIL import Image; print(Image.__name__)",
+        preload_packages=["pillow"],
+    )
+```
+
 ## Motivation
 
 1. **LocalSandbox owns the filesystem** - It already manages AgentFS SQLite. Python
@@ -95,6 +105,9 @@ Python execution happens in a separate, isolated Deno subprocess
 3. **Network Isolation**: No `--allow-net` flag
 4. **Environment Isolation**: Only cache-related variables are passed.
 
+If `preload_packages` is provided, the runner temporarily allows network
+access to the Pyodide CDN to fetch those packages.
+
 ## Implementation Details
 
 ### The Shim (`shim/src/python.ts`)
@@ -113,7 +126,8 @@ A lightweight Deno script that:
 1. Loads Pyodide.
 2. Mounts the provided directory using `NODEFS`.
 3. Sets up `cwd`.
-4. Executes the code and captures stdout/stderr.
+4. Optionally preloads requested Pyodide packages.
+5. Executes the code and captures stdout/stderr.
 
 ```typescript
 // shim/src/python-runner.ts (Simplified)
