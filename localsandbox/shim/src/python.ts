@@ -228,8 +228,17 @@ async function executePythonWithFuse(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    // Wait for mount to be ready
-    const mounted = await waitForMount(mountPoint);
+    const mountErrorPromise = new Promise<never>((_, reject) => {
+      mountProcess?.once("error", (err) => {
+        reject(err);
+      });
+    });
+
+    // Wait for mount to be ready (or fail fast on spawn errors)
+    const mounted = await Promise.race([
+      waitForMount(mountPoint),
+      mountErrorPromise,
+    ]);
     if (!mounted) {
       throw new Error("Failed to mount AgentFS via FUSE");
     }

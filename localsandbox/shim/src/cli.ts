@@ -10,6 +10,7 @@ import { Bash } from "npm:just-bash";
 import { agentfs } from "npm:agentfs-sdk/just-bash";
 import { AgentFS } from "npm:agentfs-sdk";
 import { Buffer } from "node:buffer";
+import * as fs from "node:fs";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import { executePython } from "./python.ts";
@@ -548,15 +549,20 @@ async function main(): Promise<void> {
         options: {
           db: { type: "string" },
           files: { type: "string" },
+          "files-path": { type: "string" },
         },
       });
 
-      if (!values.db || !values.files) {
-        console.error("seed requires --db and --files");
+      if (!values.db || (!values.files && !values["files-path"])) {
+        console.error("seed requires --db and --files or --files-path");
         process.exit(1);
       }
 
-      await seedCommand(values.db, values.files);
+      const filesJson = values["files-path"]
+        ? fs.readFileSync(values["files-path"], "utf8")
+        : values.files!;
+
+      await seedCommand(values.db, filesJson);
       break;
     }
 

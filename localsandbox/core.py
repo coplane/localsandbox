@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import base64
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -376,12 +377,23 @@ class LocalSandbox:
                 resolved_files[path] = content
 
         files_json = json.dumps(resolved_files)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", delete=False
+        ) as handle:
+            handle.write(files_json)
+            temp_path = handle.name
 
-        result = self._run_shim(
-            "seed",
-            {"db": str(self._db_path), "files": files_json},
-            timeout=60,
-        )
+        try:
+            result = self._run_shim(
+                "seed",
+                {"db": str(self._db_path), "files-path": temp_path},
+                timeout=60,
+            )
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
         if result.returncode != 0:
             raise SubprocessCrashed(
