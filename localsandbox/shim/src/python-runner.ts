@@ -15,6 +15,7 @@ interface RunnerInput {
   fsRoot: string;
   code: string;
   cwd: string;
+  preloadPackages?: string[];
 }
 
 interface RunnerOutput {
@@ -27,6 +28,7 @@ interface RunnerOutput {
 let pyodide: PyodideInterface | null = null;
 let capturedStdout = "";
 let capturedStderr = "";
+const loadedPackages = new Set<string>();
 
 async function getPyodide(): Promise<PyodideInterface> {
   if (!pyodide) {
@@ -34,16 +36,21 @@ async function getPyodide(): Promise<PyodideInterface> {
       stdout: (msg) => capturedStdout += msg + "\n",
       stderr: (msg) => capturedStderr += msg + "\n",
     });
-    // Preload commonly needed packages (suppress loading messages)
-    // We load Pillow/pymupdf directly instead of micropip to prevent arbitrary package installs
-    await pyodide.loadPackage("pillow", {
-      messageCallback: () => {},
-    });
-    await pyodide.loadPackage("pymupdf", {
-      messageCallback: () => {},
-    });
   }
   return pyodide;
+}
+
+async function preloadPackages(
+  py: PyodideInterface,
+  packages: string[]
+): Promise<void> {
+  for (const pkg of packages) {
+    if (loadedPackages.has(pkg)) {
+      continue;
+    }
+    await py.loadPackage(pkg, { messageCallback: () => {} });
+    loadedPackages.add(pkg);
+  }
 }
 
 async function runPython(input: RunnerInput): Promise<RunnerOutput> {
@@ -52,6 +59,10 @@ async function runPython(input: RunnerInput): Promise<RunnerOutput> {
   capturedStderr = "";
 
   const py = await getPyodide();
+  const preloadPackagesList = input.preloadPackages ?? [];
+  if (preloadPackagesList.length > 0) {
+    await preloadPackages(py, preloadPackagesList);
+  }
   const mountPoint = "/data";
 
   // Ensure mount point exists
