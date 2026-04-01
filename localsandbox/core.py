@@ -779,9 +779,7 @@ class LocalSandbox:
 
                 if envelope_type == "tool_call":
                     self._require_matching_id(envelope, request_id, key="request_id")
-                    response = self._handle_tool_call(
-                        envelope, definitions, handlers
-                    )
+                    response = self._handle_tool_call(envelope, definitions, handlers)
                     proc.stdin.write(json.dumps(response) + "\n")
                     proc.stdin.flush()
                     continue
