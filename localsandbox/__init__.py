@@ -5,7 +5,9 @@ from localsandbox.core import (
     ExecutionPreset,
     HistoryEntry,
     LocalSandbox,
+    PythonToolset,
     PythonResult,
+    ToolDefinition,
 )
 from localsandbox.exceptions import (
     CommandError,
@@ -27,7 +29,9 @@ __all__ = [
     "LocalSandbox",
     "LocalSandboxError",
     "PermissionError",
+    "PythonToolset",
     "PythonResult",
     "SubprocessCrashed",
     "TimeoutError",
+    "ToolDefinition",
 ]

@@ -80,6 +80,11 @@ with LocalSandbox() as sandbox:
 
 More runnable scripts are in `examples/`.
 
+## Design Notes
+
+- Python execution architecture: `docs/design/python-execution.md`
+- Tool bridge design: `docs/design/pyodide-tool-bridge.md`
+
 ## API Reference
 
 ### LocalSandbox
@@ -129,6 +134,7 @@ sandbox.execute_python(
     code: str,
     cwd: str | None = None,
     preload_packages: list[str] | None = None,
+    toolset: PythonToolset | None = None,
 ) -> PythonResult
 ```
 
@@ -138,6 +144,43 @@ consistency across all operations (bash, Python, and file helpers).
 
 If `preload_packages` is provided, those Pyodide packages are loaded before
 execution. No network access is granted unless preloading is requested.
+
+If `toolset` is provided, the sandbox code can call host-side tools via
+`from hosttools import call`:
+
+```python
+from localsandbox import LocalSandbox, PythonToolset, ToolDefinition
+
+def search(payload):
+    return {"results": ["result1", "result2"]}
+
+toolset = PythonToolset(
+    definitions=[
+        ToolDefinition(
+            name="search",
+            description="Search for information.",
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        )
+    ],
+    handlers={"search": search},
+)
+
+with LocalSandbox() as sandbox:
+    result = sandbox.execute_python(
+        """
+from hosttools import call
+response = call("search", {"query": "hello"})
+print(response["results"])
+""",
+        toolset=toolset,
+    )
+```
+
+`execute_python()` reuses a warmed Python runner when the tool manifest and `preload_packages` are unchanged. Files under `/data` always persist across calls. Python interpreter state may also persist across compatible calls, but sholudn't be depended on. The requested working directory is reapplied for each execution. Create a new `LocalSandbox` if you need a fresh interpreter.
 
 #### File Operations
 
@@ -251,14 +294,8 @@ LocalSandbox uses a TypeScript shim (running on Deno) that bridges Python to:
 - **Pyodide**: Python interpreter compiled to WebAssembly for sandboxed Python
   execution
 
-Each operation spawns a Deno subprocess that:
+Each bash call spawns a Deno subprocess that runs just-bash against the AgentFS database. Python execution uses a persistent Deno/Pyodide subprocess across compatible calls, communicating via line-delimited JSON over stdio. When a toolset is provided, tool calls are relayed between the sandbox and host handlers through the same protocol.
 
-1. Opens the SQLite database
-2. Executes the operation via just-bash or Pyodide
-3. Persists changes back to SQLite
-4. Returns JSON results
-
-This architecture provides strong isolation while maintaining state persistence.
 Both bash and Python share the same virtual filesystem backed by SQLite.
 
 ## Development

@@ -3,8 +3,14 @@
     "strict": true
   },
   "nodeModulesDir": "auto",
+  "imports": {
+    "just-bash": "npm:just-bash",
+    "agentfs-sdk": "npm:agentfs-sdk",
+    "agentfs-sdk/just-bash": "npm:agentfs-sdk/just-bash",
+    "pyodide": "npm:pyodide"
+  },
   "tasks": {
-    "run": "deno run --allow-read --allow-write --allow-env --allow-net --allow-ffi src/cli.ts",
-    "check": "deno check src/cli.ts src/python.ts"
+    "run": "deno run --allow-read --allow-write --allow-env --allow-net --allow-ffi --allow-run src/server.ts",
+    "check": "deno check src/server.ts src/python-runner.ts"
   }
 }
