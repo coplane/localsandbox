@@ -101,8 +101,22 @@ class TestLocalSandboxExecutionPresets:
         try:
             # This should hit the loop limit (100 iterations)
             # Using a for loop that runs 200 times
-            with pytest.raises((ExecutionLimitError, CommandError)):
+            with pytest.raises(ExecutionLimitError) as exc_info:
                 sandbox.bash("for i in $(seq 1 200); do echo $i; done")
+            assert exc_info.value.limit_type == "loop_iterations"
+            assert exc_info.value.limit_value == 100
+        finally:
+            sandbox.destroy()
+
+    def test_strict_preset_limits_command_count(self) -> None:
+        """Test that STRICT preset limits total command count."""
+        sandbox = LocalSandbox(preset=ExecutionPreset.STRICT)
+        try:
+            command = "; ".join(f"echo {i}" for i in range(600))
+            with pytest.raises(ExecutionLimitError) as exc_info:
+                sandbox.bash(command)
+            assert exc_info.value.limit_type == "command_count"
+            assert exc_info.value.limit_value == 500
         finally:
             sandbox.destroy()
 

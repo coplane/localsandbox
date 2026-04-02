@@ -707,10 +707,6 @@ class LocalSandbox:
                 stderr=message,
                 path=path,
             )
-        if error_type == "execution_limit":
-            limit_error = self._parse_execution_limit_error(message)
-            if limit_error:
-                raise limit_error
         raise SubprocessCrashed(message)
 
     def _validate_toolset(
@@ -900,13 +896,18 @@ class LocalSandbox:
         self._send_request({"type": "seed", "files": resolved})
 
     def _parse_execution_limit_error(
-        self, error_message: str
+        self,
+        error_message: str,
+        *,
+        exit_code: int | None = None,
     ) -> ExecutionLimitError | None:
-        """Parse execution limit errors from shim output."""
-        # Match patterns like "Loop iteration limit (100) exceeded"
-        # or "Command count limit (500) exceeded"
+        """Parse execution limit failures from current just-bash stderr output."""
+        # Current just-bash loop iteration wording:
+        # "bash: for loop: too many iterations (100), increase executionLimits.maxLoopIterations"
         loop_match = re.search(
-            r"[Ll]oop.*(?:iteration|limit).*\((\d+)\).*exceeded", error_message
+            r"too many iterations\s*\((\d+)\).*executionLimits\.maxLoopIterations",
+            error_message,
+            re.IGNORECASE,
         )
         if loop_match:
             return ExecutionLimitError(
@@ -915,8 +916,12 @@ class LocalSandbox:
                 limit_value=int(loop_match.group(1)),
             )
 
+        # Current just-bash command count wording:
+        # "bash: too many commands executed (>500), increase executionLimits.maxCommandCount"
         cmd_match = re.search(
-            r"[Cc]ommand.*(?:count|limit).*\((\d+)\).*exceeded", error_message
+            r"too many commands executed\s*\(>?(\d+)\).*executionLimits\.maxCommandCount",
+            error_message,
+            re.IGNORECASE,
         )
         if cmd_match:
             return ExecutionLimitError(
@@ -925,8 +930,23 @@ class LocalSandbox:
                 limit_value=int(cmd_match.group(1)),
             )
 
-        # Also check for generic limit messages
-        if "limit" in error_message.lower() and "exceeded" in error_message.lower():
+        # Alternate just-bash command count wording from top-level command guard:
+        # "bash: maximum command count (500) exceeded ..."
+        cmd_match = re.search(
+            r"maximum command count\s*\((\d+)\).*executionLimits\.maxCommandCount",
+            error_message,
+            re.IGNORECASE,
+        )
+        if cmd_match:
+            return ExecutionLimitError(
+                error_message,
+                limit_type="command_count",
+                limit_value=int(cmd_match.group(1)),
+            )
+
+        # just-bash uses exit code 126 for execution-limit failures. Keep this
+        # as a fallback when stderr wording is less specific than expected.
+        if exit_code == 126 or "executionlimits." in error_message.lower():
             return ExecutionLimitError(
                 error_message,
                 limit_type="unknown",
@@ -1025,6 +1045,13 @@ class LocalSandbox:
                     stderr=bash_result.stderr,
                     path=path,
                 )
+
+            limit_error = self._parse_execution_limit_error(
+                bash_result.stderr,
+                exit_code=bash_result.exit_code,
+            )
+            if limit_error:
+                raise limit_error
 
             msg = f"Command failed with exit code {bash_result.exit_code}"
             if bash_result.stderr:
