@@ -428,5 +428,12 @@
       "integrity": "sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A==",
       "bin": true
     }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:agentfs-sdk@*",
+      "npm:just-bash@*",
+      "npm:pyodide@*"
+    ]
   }
 }

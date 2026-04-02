@@ -19,46 +19,60 @@ JavaScript-based just-bash and AgentFS libraries, providing:
 
 ## Architecture
 
-### TypeScript Shim Model
+### Persistent Server Model
 
-LocalSandbox uses a Deno-based TypeScript CLI shim (`localsandbox-shim`) that
-bridges Python to just-bash and AgentFS:
+LocalSandbox uses a long-lived Deno server process per `LocalSandbox` instance.
+The Python SDK talks to that server over newline-delimited JSON on stdio. Bash,
+file helpers, KV, history, and Python execution all go through the same server.
 
 ```
-┌─────────────────┐     subprocess      ┌─────────────────────────────────┐
-│   Python SDK    │ ─────────────────── │  TypeScript Shim (localsandbox-shim)  │
-│   (localsandbox.py)   │     JSON stdio      │  just-bash + agentfs-sdk        │
-└─────────────────┘                     └─────────────────────────────────┘
-        │                                              │
-        │                                              │
-        ▼                                              ▼
-┌─────────────────┐                     ┌─────────────────────────────────┐
-│  Temp SQLite    │◄────────────────────│  AgentFS (filesystem + KV +     │
-│  Database File  │   persistence       │  audit trail)                   │
-└─────────────────┘                     └─────────────────────────────────┘
+┌─────────────────┐   NDJSON over stdio  ┌──────────────────────────────┐
+│   Python SDK    │ ───────────────────► │ Deno Server (`server.ts`)    │
+│   `core.py`     │ ◄─────────────────── │ just-bash + AgentFS          │
+└─────────────────┘                      └──────────────┬───────────────┘
+                                                        │
+                                                        │ optional
+                                                        ▼
+                                         ┌──────────────────────────────┐
+                                         │ Python Runner                │
+                                         │ (`python-runner.ts`)         │
+                                         │ Pyodide + bridge module      │
+                                         └──────────────┬───────────────┘
+                                                        │
+                                                        ▼
+                                         ┌──────────────────────────────┐
+                                         │ AgentFS SQLite database      │
+                                         │ files + KV + audit trail     │
+                                         └──────────────────────────────┘
 ```
 
 **How it works:**
 
-1. Python creates a temp SQLite database file per `LocalSandbox` instance
-2. Each `bash()` call invokes the shim CLI with the database path
-3. The shim opens AgentFS with that database, creates a just-bash instance with
-   the AgentFS filesystem
-4. Command executes, changes persist to SQLite automatically
-5. Shim returns JSON result to Python
+1. Python creates a temp SQLite database file per `LocalSandbox` instance.
+2. The first operation starts `shim/src/server.ts` with that database path.
+3. The server opens AgentFS once and keeps it open for the sandbox lifetime.
+4. Bash, file, KV, history, and snapshot checkpoint requests are handled directly in the server process.
+5. The first `execute_python()` call starts a restricted runner subprocess.
+6. Compatible Python calls reuse the warmed runner. If preload packages or the tool manifest change, the runner is restarted.
+7. The server exits when the sandbox is destroyed.
 
 **Why this model:**
 
 - AgentFS provides a filesystem adapter for just-bash (`agentfs-sdk/just-bash`)
 - All state (files, KV, audit trail) lives in a single SQLite file
 - Snapshots are just the SQLite file bytes - trivially portable
-- The shim is bundled with the Python package and run directly by Deno
+- A persistent server amortizes Deno startup across many operations
+- A persistent Python runner amortizes Pyodide startup across compatible calls
 
 ### Concurrency Model
 
-Each `LocalSandbox` instance owns its own SQLite database file. No sharing
-between instances, no race conditions. Users requiring concurrent access should
-create separate sandbox instances.
+Each `LocalSandbox` instance owns:
+
+- one SQLite database file
+- one Deno server subprocess
+- zero or one Python runner subprocess
+
+Calls on a single sandbox are serialized by the Python SDK with a re-entrant lock, so concurrent callers are safe but not parallel. Different sandboxes are fully isolated from each other.
 
 ## Project Structure
 
@@ -68,13 +82,13 @@ localsandbox/
 │   ├── __init__.py
 │   ├── core.py            # LocalSandbox class
 │   └── exceptions.py      # Exception hierarchy
-├── shim/                   # TypeScript CLI shim
+├── shim/                   # TypeScript server + runner
 │   ├── deno.json
 │   ├── deno.lock
 │   └── src/
-│       ├── cli.ts         # CLI entry point
-│       ├── python.ts      # Python execution orchestration
-│       └── python-runner.ts # Isolated Python runner
+│       ├── bridge-types.ts
+│       ├── python-runner.ts
+│       └── server.ts
 ├── tests/
 └── pyproject.toml
 ```
@@ -92,8 +106,9 @@ localsandbox/
 **Runtime prerequisites** (user must have installed):
 
 - Deno (with npm compatibility)
+- AgentFS CLI if you want the Linux FUSE fast path for Python execution
 
-The shim is run directly from TypeScript; Deno caches npm dependencies locally.
+The server and runner are run directly from TypeScript; Deno caches npm dependencies locally.
 
 ## Core API
 
@@ -162,12 +177,19 @@ instead of returning.
 ### Python Execution
 
 ```python
-result = sandbox.execute_python("print('hello')", cwd="/data")
+result = sandbox.execute_python(
+    "print('hello')",
+    cwd="/data",
+    preload_packages=["pillow"],
+    toolset=toolset,
+)
 ```
 
 The sandbox filesystem is mounted at `/data` in both bash and Python
 environments. All paths should use the `/data` prefix for consistency across all
 operations.
+
+Python execution uses a persistent Pyodide runner. Compatible calls reuse the same interpreter. Interpreter globals may therefore persist across calls, but that should be treated as an optimization, not a contract.
 
 Optional package preloading:
 
@@ -177,6 +199,56 @@ result = sandbox.execute_python(
     preload_packages=["pillow"],
 )
 ```
+
+Optional host tool bridge:
+
+```python
+from localsandbox import LocalSandbox, PythonToolset, ToolDefinition
+
+def echo(payload):
+    return {"echo": payload["text"]}
+
+toolset = PythonToolset(
+    definitions=[
+        ToolDefinition(
+            name="echo",
+            description="Echo text back to the caller.",
+            input_schema={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "properties": {"echo": {"type": "string"}},
+                "required": ["echo"],
+                "additionalProperties": False,
+            },
+            timeout_ms=5_000,
+        )
+    ],
+    handlers={"echo": echo},
+)
+
+result = sandbox.execute_python(
+    """
+from host_tools import call
+print(call("echo", {"text": "hello"})["echo"])
+""",
+    toolset=toolset,
+)
+```
+
+Tool bridge behavior:
+
+- Inputs and outputs are validated against a small JSON Schema subset.
+- Per-tool timeout is defined in `ToolDefinition.timeout_ms`.
+- Timeouts are best-effort. They return control to the caller promptly, but a
+  synchronous host handler may continue running in the background until it
+  finishes.
+- Tool-enabled Python calls are logged as both `python` and
+  `python_tool_call` history entries.
 
 ### PythonResult
 
@@ -226,6 +298,14 @@ class SubprocessCrashed(LocalSandboxError):
 Common errors (file not found, permission denied, timeout) are parsed from
 stderr and raised as typed exceptions. Unknown errors raise `CommandError` with
 raw stderr.
+
+Timeouts can come from several layers:
+
+- tool handler timeout (`ToolDefinition.timeout_ms`)
+- server startup timeout
+- generic request timeout
+- bash request timeout
+- Python execution timeout
 
 ## File Helper Methods
 
@@ -305,8 +385,8 @@ keys: list[str] = sandbox.kv.keys()
 Values are strings only. Users must serialize/deserialize complex objects
 themselves.
 
-KV operations invoke the shim with specific KV commands, which use AgentFS's
-built-in KV store.
+KV operations are sent directly to the persistent Deno server, which uses
+AgentFS's built-in KV store.
 
 ## Async Support
 
@@ -330,13 +410,13 @@ The async methods use `asyncio.to_thread()` internally.
 
 ## Audit Logging
 
-All bash executions are automatically logged to AgentFS's toolcall audit trail:
+Operations are automatically logged to AgentFS's toolcall audit trail:
 
-- Command executed
-- Timestamp (start/end)
-- Duration
-- Exit code
-- Stdout/stderr (truncated if large)
+- `bash` executions
+- direct file helper operations
+- KV operations
+- `python` executions
+- `python_tool_call` entries for host tool bridge activity
 
 No opt-out. This provides debugging and observability for agent workflows.
 
@@ -349,7 +429,7 @@ sandbox = LocalSandbox(files={...})
 ```
 
 - SQLite database file created in temp directory
-- If `files` provided: shim seeds initial files into AgentFS
+- If `files` provided: server seeds initial files into AgentFS
 - If `snapshot` provided: bytes written to temp file, AgentFS opens it
 - Local `Path` references read immediately (not lazily)
 
@@ -359,12 +439,12 @@ sandbox = LocalSandbox(files={...})
 result = sandbox.bash('...')
 ```
 
-- Each call spawns the shim CLI subprocess
-- Shim opens AgentFS with the SQLite database path
-- Creates just-bash instance with AgentFS filesystem
-- Command executes in just-bash sandbox
-- Changes persist to SQLite automatically (AgentFS handles this)
-- Shim returns JSON result, subprocess exits
+- First call starts the persistent Deno server
+- Server opens AgentFS with the SQLite database path
+- Bash runs inside just-bash against AgentFS
+- File/KV/history calls execute directly in the server
+- Python execution starts or reuses the Pyodide runner
+- Changes persist to SQLite automatically
 
 ### Destruction
 
@@ -373,6 +453,8 @@ sandbox.destroy()
 ```
 
 - SQLite database file deleted
+- Server subprocess stopped
+- Python runner subprocess stopped if present
 - Instance marked as destroyed
 - Subsequent operations raise `RuntimeError`
 
@@ -389,11 +471,13 @@ resume from it later.
 
 ## Network Access
 
-**Disabled entirely.** No `curl`, `wget`, or network commands in bash or Python
-execution. The sandbox is pure filesystem operations only.
+**Disabled in bash and disabled by default in Python.** No `curl`, `wget`, or
+network commands in bash execution. The Python runner has no network access
+unless `preload_packages` is provided, in which case network access is limited
+to fetching Pyodide packages.
 
-If agents need network access, make HTTP calls in the host Python process and
-write results to the sandbox filesystem.
+If agents need network access during tool-enabled Python execution, expose that
+capability explicitly through a host tool handler.
 
 ## Limitations
 
@@ -407,63 +491,39 @@ the 70+ built-in commands only.
 just-bash cannot execute actual binaries or WASM. Commands like `grep`, `sed`,
 `awk` are TypeScript reimplementations.
 
-### Subprocess Latency
+### Warmup Costs
 
-Each `bash()` call spawns a Deno process. Expect ~50-200ms overhead per call.
-Batch operations when possible:
-
-```python
-# Prefer this
-result = sandbox.bash('ls && cat file1.txt && cat file2.txt')
-
-# Over this
-sandbox.bash('ls')
-sandbox.bash('cat file1.txt')
-sandbox.bash('cat file2.txt')
-```
+The first operation on a sandbox starts the Deno server. The first compatible
+Python execution also pays Pyodide startup cost. Later calls are much cheaper,
+but changing preload packages or the Python tool manifest restarts the runner.
 
 ### SQLite File Location
 
 AgentFS SQLite files are created in the system temp directory. Users cannot
 currently specify a custom location.
 
-## Shim CLI Interface
+## Server Protocol
 
-The TypeScript shim (`localsandbox-shim`) accepts commands via CLI arguments:
+The Python SDK sends NDJSON request envelopes to `server.ts`:
 
-```bash
-# Execute bash command
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts bash --db /tmp/localsandbox.db --cwd /home/user --command "ls -la"
+- `bash`
+- `seed`
+- `read_file`
+- `write_file`
+- `list_files`
+- `exists`
+- `delete_file`
+- `kv_get`
+- `kv_set`
+- `kv_delete`
+- `kv_keys`
+- `checkpoint`
+- `history`
+- `execute_python`
+- `shutdown`
 
-# Seed initial files (called once at LocalSandbox creation)
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts seed --db /tmp/localsandbox.db --files '{"path": "content", ...}'
-
-# File operations
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts read-file --db /tmp/localsandbox.db --path /home/user/file.txt
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts write-file --db /tmp/localsandbox.db --path /home/user/file.txt --content "..."
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts list-files --db /tmp/localsandbox.db --path /home/user
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts exists --db /tmp/localsandbox.db --path /home/user/file.txt
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts delete-file --db /tmp/localsandbox.db --path /home/user/file.txt
-
-# KV operations
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts kv-get --db /tmp/localsandbox.db --key mykey
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts kv-set --db /tmp/localsandbox.db --key mykey --value myvalue
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts kv-delete --db /tmp/localsandbox.db --key mykey
-deno run --allow-read --allow-write --allow-env --allow-ffi --allow-run \
-  shim/src/cli.ts kv-keys --db /tmp/localsandbox.db
-```
-
-All commands output JSON to stdout.
+The server responds with `result` or `error` envelopes. Python execution can
+also interleave `tool_call` envelopes before a final `result`.
 
 ## Usage with Agent Frameworks
 

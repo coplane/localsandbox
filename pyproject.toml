@@ -1,13 +1,13 @@
 [project]
 name = "localsandbox"
-version = "0.2.0"
+version = "0.3.0"
 description = "A python SDK for a agentfs + just-bash + pyodide agent sandbox."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
 
 [build-system]
-requires = ["uv_build>=0.8.19,<0.10.0"]
+requires = ["uv_build>=0.8.19,<0.12.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
