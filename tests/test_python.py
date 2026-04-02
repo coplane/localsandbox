@@ -5,6 +5,7 @@ import base64
 import io
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,13 @@ from PIL import Image
 
 from localsandbox import LocalSandbox, PythonToolset, ToolDefinition
 from localsandbox.core import JsonValue
+from localsandbox.exceptions import TimeoutError
+
+
+def _write_fake_server(script_path: Path, source: str) -> Path:
+    """Write a minimal Deno server script for timeout tests."""
+    script_path.write_text(source, encoding="utf-8")
+    return script_path
 
 
 class TestPythonExecution:
@@ -574,3 +582,99 @@ except NameError:
             )
             assert result.exit_code == 0, result.stderr
             assert result.stdout.strip() == "not found"
+
+    def test_python_tool_timeout_returns_promptly(self) -> None:
+        """Timed-out tools should return control quickly to the caller."""
+
+        def slow_write(payload: dict[str, JsonValue]) -> JsonValue:
+            time.sleep(0.2)
+            return {"ok": True}
+
+        toolset = PythonToolset(
+            definitions=[
+                ToolDefinition(
+                    name="slow_write",
+                    description="Sleeps and writes a marker file.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                    output_schema={
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"],
+                        "additionalProperties": False,
+                    },
+                    timeout_ms=50,
+                )
+            ],
+            handlers={"slow_write": slow_write},
+        )
+
+        with LocalSandbox() as sandbox:
+            warmup = sandbox.execute_python('print("warmup")', toolset=toolset)
+            assert warmup.exit_code == 0, warmup.stderr
+
+            started_at = time.monotonic()
+            result = sandbox.execute_python(
+                """
+from hosttools import call
+
+try:
+    call("slow_write", {})
+except Exception as exc:
+    print(exc)
+""",
+                toolset=toolset,
+            )
+            elapsed_s = time.monotonic() - started_at
+
+            assert result.exit_code == 0, result.stderr
+            assert "timed out" in result.stdout
+            assert elapsed_s < 0.15
+
+
+class TestServerTimeouts:
+    """Tests for bounded server handshake and response waits."""
+
+    def test_server_startup_timeout_is_bounded(self, tmp_path: Path) -> None:
+        """Startup should fail fast if the server never sends a ready envelope."""
+        server_path = _write_fake_server(
+            tmp_path / "hang-before-ready.ts",
+            """
+await new Promise((resolve) => setTimeout(resolve, 5000));
+""",
+        )
+
+        sandbox = LocalSandbox()
+        sandbox._server_path = server_path
+        sandbox._server_startup_timeout_ms = 50
+
+        try:
+            with pytest.raises(TimeoutError):
+                sandbox.read_file("/data/does-not-matter.txt")
+        finally:
+            sandbox.destroy()
+
+    def test_server_response_timeout_is_bounded(self, tmp_path: Path) -> None:
+        """Operations should time out if the server stops responding."""
+        server_path = _write_fake_server(
+            tmp_path / "hang-after-ready.ts",
+            """
+console.log(JSON.stringify({ type: "ready" }));
+await Deno.stdin.read(new Uint8Array(1024));
+await new Promise((resolve) => setTimeout(resolve, 5000));
+""",
+        )
+
+        sandbox = LocalSandbox()
+        sandbox._server_path = server_path
+        sandbox._server_startup_timeout_ms = 50
+        sandbox._default_request_timeout_ms = 50
+
+        try:
+            with pytest.raises(TimeoutError):
+                sandbox.read_file("/data/does-not-matter.txt")
+        finally:
+            sandbox.destroy()

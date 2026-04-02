@@ -260,7 +260,7 @@ def _execute_tool_handler(
     handler: ToolHandler,
     payload: dict[str, JsonValue],
 ) -> JsonValue:
-    """Execute a tool handler with timeout and JSON serialization checks."""
+    """Execute a tool handler with best-effort timeout and JSON checks."""
 
     def invoke() -> JsonValue:
         result = handler(payload)
@@ -381,9 +381,10 @@ class LocalSandbox:
     """
     Sandboxed filesystem operations via just-bash and AgentFS.
 
-    Each bash operation spawns the TypeScript shim CLI that opens the AgentFS
-    database, executes the command via just-bash, and returns the result.
-    All filesystem state persists in a SQLite database file.
+    Each instance owns a persistent Deno server subprocess that opens the
+    AgentFS database once and serves bash, file, KV, history, and Python
+    requests over stdio. All filesystem state persists in a SQLite database
+    file.
     """
 
     def __init__(
@@ -424,6 +425,10 @@ class LocalSandbox:
         self._server_stderr_lines: list[str] = []
         self._server_lock = threading.RLock()
         self._request_counter = 0
+        self._server_startup_timeout_ms = 10_000
+        self._default_request_timeout_ms = 60_000
+        self._bash_timeout_ms = 30_000
+        self._python_timeout_ms = 60_000
 
         # Create temp directory for database
         self._temp_dir = Path(tempfile.mkdtemp(prefix="localsandbox_"))
@@ -492,27 +497,18 @@ class LocalSandbox:
             self._server_proc = proc
 
             # Wait for the server to signal readiness.
-            ready_line = proc.stdout.readline()
-            if ready_line == "":
-                stderr_output = "".join(self._server_stderr_lines).strip()
-                self._stop_server()
-                raise SubprocessCrashed(
-                    f"Server exited during startup: {stderr_output}"
-                )
-
-            try:
-                ready = json.loads(ready_line)
-            except json.JSONDecodeError as exc:
-                self._stop_server()
-                raise SubprocessCrashed(
-                    f"Invalid server handshake: {ready_line}"
-                ) from exc
+            ready = self._read_server_envelope(
+                proc,
+                eof_message="Server exited during startup",
+                timeout_ms=self._server_startup_timeout_ms,
+                timeout_context="Server startup",
+            )
 
             if ready.get("type") != "ready":
                 self._stop_server()
-                raise SubprocessCrashed(f"Unexpected server handshake: {ready_line}")
+                raise SubprocessCrashed(f"Unexpected server handshake: {ready!r}")
 
-    def _stop_server(self) -> None:
+    def _stop_server(self, *, force: bool = False) -> None:
         """Gracefully stop the persistent server subprocess."""
         with self._server_lock:
             proc = self._server_proc
@@ -520,20 +516,23 @@ class LocalSandbox:
                 return
             try:
                 if proc.poll() is None:
-                    try:
-                        if proc.stdin:
-                            shutdown = json.dumps(
-                                {"id": self._next_request_id(), "type": "shutdown"}
-                            )
-                            proc.stdin.write(shutdown + "\n")
-                            proc.stdin.flush()
-                            proc.stdin.close()
-                    except OSError:
-                        pass
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
+                    if force:
                         proc.kill()
+                    else:
+                        try:
+                            if proc.stdin:
+                                shutdown = json.dumps(
+                                    {"id": self._next_request_id(), "type": "shutdown"}
+                                )
+                                proc.stdin.write(shutdown + "\n")
+                                proc.stdin.flush()
+                                proc.stdin.close()
+                        except OSError:
+                            pass
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
             except OSError:
                 if proc.poll() is None:
                     proc.kill()
@@ -544,19 +543,64 @@ class LocalSandbox:
                 self._server_stderr_thread = None
                 self._server_stderr_lines = []
 
+    def _readline_with_timeout(
+        self,
+        stream: Any,
+        *,
+        timeout_ms: int,
+        timeout_context: str,
+    ) -> str:
+        """Read one line from a blocking text stream with a deadline."""
+        line: str | None = None
+        error: BaseException | None = None
+
+        def reader() -> None:
+            nonlocal line, error
+            try:
+                line = stream.readline()
+            except BaseException as exc:  # noqa: BLE001 - propagate stream errors
+                error = exc
+
+        thread = threading.Thread(target=reader, daemon=True)
+        thread.start()
+        thread.join(timeout_ms / 1000)
+
+        if thread.is_alive():
+            self._stop_server(force=True)
+            thread.join(timeout=1)
+            raise TimeoutError(
+                f"{timeout_context} timed out after {timeout_ms} ms",
+                timeout_ms=timeout_ms,
+            )
+
+        if error is not None:
+            self._stop_server(force=True)
+            raise SubprocessCrashed(
+                f"{timeout_context} failed while reading server output: {error}"
+            ) from error
+
+        return line or ""
+
     def _read_server_envelope(
         self,
         proc: subprocess.Popen[str],
         *,
         eof_message: str,
+        timeout_ms: int,
+        timeout_context: str,
     ) -> dict[str, Any]:
         """Read and decode one NDJSON envelope from the server."""
         assert proc.stdout is not None
 
-        line = proc.stdout.readline()
+        line = self._readline_with_timeout(
+            proc.stdout,
+            timeout_ms=timeout_ms,
+            timeout_context=timeout_context,
+        )
+
         if line == "":
             stderr_output = "".join(self._server_stderr_lines).strip()
-            self._stop_server()
+            self._stop_server(force=True)
             raise SubprocessCrashed(f"{eof_message}: {stderr_output}")
 
         try:
@@ -570,6 +614,23 @@ class LocalSandbox:
             raise SubprocessCrashed(f"Invalid server response envelope: {line}")
 
         return envelope
+
+    def _remaining_timeout_ms(
+        self,
+        deadline: float,
+        total_timeout_ms: int,
+        timeout_context: str,
+    ) -> int:
+        """Return time left until deadline or raise TimeoutError."""
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms > 0:
+            return remaining_ms
+
+        self._stop_server(force=True)
+        raise TimeoutError(
+            f"{timeout_context} timed out after {total_timeout_ms} ms",
+            timeout_ms=total_timeout_ms,
+        )
 
     def _require_matching_id(
         self,
@@ -590,12 +651,21 @@ class LocalSandbox:
             f"for envelope type {envelope.get('type')!r}"
         )
 
-    def _send_request(self, request: dict[str, Any]) -> dict[str, Any]:
+    def _send_request(
+        self,
+        request: dict[str, Any],
+        *,
+        timeout_ms: int | None = None,
+        timeout_context: str = "Server request",
+    ) -> dict[str, Any]:
         """Send a request to the server and return the response data.
 
         Raises:
             SubprocessCrashed: If the server exits or returns an error.
         """
+        effective_timeout_ms = (
+            self._default_request_timeout_ms if timeout_ms is None else timeout_ms
+        )
         with self._server_lock:
             self._ensure_server()
             proc = self._server_proc
@@ -609,6 +679,8 @@ class LocalSandbox:
             response = self._read_server_envelope(
                 proc,
                 eof_message="Server exited unexpectedly",
+                timeout_ms=effective_timeout_ms,
+                timeout_context=timeout_context,
             )
             self._require_matching_id(response, request_id)
 
@@ -758,6 +830,7 @@ class LocalSandbox:
             proc = self._server_proc
             assert proc is not None and proc.stdin and proc.stdout
 
+            deadline = time.monotonic() + (self._python_timeout_ms / 1000)
             request_id = self._next_request_id()
             request = {
                 "id": request_id,
@@ -774,6 +847,10 @@ class LocalSandbox:
                 envelope = self._read_server_envelope(
                     proc,
                     eof_message="Server exited during Python execution",
+                    timeout_ms=self._remaining_timeout_ms(
+                        deadline, self._python_timeout_ms, "Python execution"
+                    ),
+                    timeout_context="Python execution",
                 )
                 envelope_type = envelope.get("type")
 
@@ -900,7 +977,7 @@ class LocalSandbox:
         Raises:
             CommandError: If the command returns non-zero exit code.
             ExecutionLimitError: If execution limits are exceeded.
-            SubprocessCrashed: If the Node subprocess crashes.
+            SubprocessCrashed: If the server subprocess crashes.
             RuntimeError: If the sandbox has been destroyed.
         """
         if self._destroyed:
@@ -914,7 +991,9 @@ class LocalSandbox:
                 "command": command,
                 "cwd": self._cwd,
                 "limits": self._limits,
-            }
+            },
+            timeout_ms=self._bash_timeout_ms,
+            timeout_context="Bash execution",
         )
 
         duration_ms = (time.perf_counter() - start_time) * 1000
@@ -1247,7 +1326,7 @@ class LocalSandbox:
         Raises:
             CommandError: If the command returns non-zero exit code.
             ExecutionLimitError: If execution limits are exceeded.
-            SubprocessCrashed: If the Node subprocess crashes.
+            SubprocessCrashed: If the server subprocess crashes.
             RuntimeError: If the sandbox has been destroyed.
         """
         return await asyncio.to_thread(self.bash, command)

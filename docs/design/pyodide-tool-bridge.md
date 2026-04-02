@@ -209,9 +209,8 @@ exits.
    - Validate payload against `input_schema`.
    - Validate tool return value against `output_schema` when present.
 3. **Per-tool timeout**
-   - Each handler gets a strict timeout policy.
-   - v1 should either require async handlers for strict enforcement or clearly
-     document best-effort behavior for sync handlers.
+   - Each handler gets a configured timeout policy.
+   - v1 documents best-effort behavior for synchronous handlers.
 4. **Payload size limits**
    - Bound request and response byte size to prevent memory abuse.
 5. **No host object injection**
@@ -241,7 +240,8 @@ This avoids blocking the bridge on a larger history API redesign.
 
 ## Open Questions
 
-1. Should v1 require async handlers for strict timeout enforcement?
+1. Should a future version require async handlers or a separate worker model for
+   strict timeout enforcement?
 2. What payload size limit should apply before the bridge returns
    `validation_error` or `internal_error`?
 3. Should generated helper modules include schemas and docstrings for better
