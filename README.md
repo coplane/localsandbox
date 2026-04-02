@@ -145,20 +145,19 @@ consistency across all operations (bash, Python, and file helpers).
 If `preload_packages` is provided, those Pyodide packages are loaded before
 execution. No network access is granted unless preloading is requested.
 
-If `toolset` is provided, the sandbox code can call host-side tools via
-`from hosttools import call`:
+If `toolset` is provided, the sandbox code can call host-side tools via `from host_tools import call` and search the declared toolset via `host_tools.search()`:
 
 ```python
 from localsandbox import LocalSandbox, PythonToolset, ToolDefinition
 
-def search(payload):
+def web_search(payload):
     return {"results": ["result1", "result2"]}
 
 toolset = PythonToolset(
     definitions=[
         ToolDefinition(
-            name="search",
-            description="Search for information.",
+            name="web_search",
+            description="Search the web for information.",
             input_schema={
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -166,14 +165,16 @@ toolset = PythonToolset(
             },
         )
     ],
-    handlers={"search": search},
+    handlers={"web_search": web_search},
 )
 
 with LocalSandbox() as sandbox:
     result = sandbox.execute_python(
         """
-from hosttools import call
-response = call("search", {"query": "hello"})
+from host_tools import call, search
+
+print(search("web"))
+response = call("web_search", {"query": "hello"})
 print(response["results"])
 """,
         toolset=toolset,

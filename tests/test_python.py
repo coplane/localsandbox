@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import io
+import json
 import os
 import tempfile
 import time
@@ -380,12 +381,73 @@ class TestPythonTools:
             },
         )
 
+    @staticmethod
+    def _search_toolset() -> PythonToolset:
+        success_schema = {
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+            },
+            "required": ["ok"],
+            "additionalProperties": False,
+        }
+        definitions = [
+            ToolDefinition(
+                name="slack_post_message",
+                description="Post a message to Slack channels and threads.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "channel": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["channel", "text"],
+                    "additionalProperties": False,
+                },
+                output_schema=success_schema,
+            ),
+            ToolDefinition(
+                name="github_search_issues",
+                description="Search GitHub issues in a repository.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string"},
+                        "query": {"type": "string"},
+                    },
+                    "required": ["repo", "query"],
+                    "additionalProperties": False,
+                },
+                output_schema=success_schema,
+            ),
+            ToolDefinition(
+                name="web_lookup",
+                description="Search the web for public information.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                output_schema=success_schema,
+            ),
+        ]
+        return PythonToolset(
+            definitions=definitions,
+            handlers={
+                definition.name: lambda payload: {"ok": True}
+                for definition in definitions
+            },
+        )
+
     def test_python_calls_host_tool(self) -> None:
         """Python code can call an SDK-provided host tool."""
         with LocalSandbox() as sandbox:
             result = sandbox.execute_python(
                 """
-from hosttools import call
+from host_tools import call
 
 response = call("echo", {"text": "hello bridge"})
 print(response["echo"])
@@ -401,7 +463,7 @@ print(response["echo"])
         with LocalSandbox() as sandbox:
             result = sandbox.execute_python(
                 """
-from hosttools import call
+from host_tools import call
 
 call("echo", {"text": 123})
 """,
@@ -448,7 +510,7 @@ call("echo", {"text": 123})
         with LocalSandbox() as sandbox:
             result = sandbox.execute_python(
                 """
-from hosttools import call
+from host_tools import call
 
 response = call("reverse", {"text": "drawer"})
 print(response["reversed"])
@@ -464,7 +526,7 @@ print(response["reversed"])
         with LocalSandbox() as sandbox:
             sandbox.execute_python(
                 """
-from hosttools import call
+from host_tools import call
 
 response = call("echo", {"text": "history"})
 print(response["echo"])
@@ -475,6 +537,32 @@ print(response["echo"])
             history_names = [entry.name for entry in sandbox.history(limit=10)]
             assert "python" in history_names
             assert "python_tool_call" in history_names
+
+    def test_python_can_search_declared_tools(self) -> None:
+        """The host_tools module can rank declared tools and return details."""
+        with LocalSandbox() as sandbox:
+            result = sandbox.execute_python(
+                """
+import json
+from host_tools import search
+
+brief = search("slack")
+full = search("slack message", detail="full", limit=1)
+print(json.dumps({"brief": brief, "full": full}))
+""",
+                toolset=self._search_toolset(),
+            )
+
+            assert result.exit_code == 0, result.stderr
+            payload = json.loads(result.stdout)
+            assert [entry["name"] for entry in payload["brief"]] == [
+                "slack_post_message"
+            ]
+            assert "input_schema" not in payload["brief"][0]
+            assert payload["full"][0]["name"] == "slack_post_message"
+            assert payload["full"][0]["input_schema"]["properties"]["channel"] == {
+                "type": "string"
+            }
 
     def test_python_execution_state_persists_between_calls(self) -> None:
         """Compatible executions reuse interpreter state."""
@@ -619,7 +707,7 @@ except NameError:
             started_at = time.monotonic()
             result = sandbox.execute_python(
                 """
-from hosttools import call
+from host_tools import call
 
 try:
     call("slow_write", {})

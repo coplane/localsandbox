@@ -72,13 +72,14 @@ today.
 
 ## In-sandbox Usage
 
-The runner registers a bridge module named `hosttools` with a synchronous
+The runner registers a bridge module named `host_tools` with a synchronous
 entrypoint (backed by Pyodide's `run_sync`):
 
 ```python
-from hosttools import call
+from host_tools import call, search
 
 results = call("web_search", {"query": "doctors in Vancouver"})
+matches = search("web")
 ```
 
 Optionally, LocalSandbox can generate a helper module for convenience:
@@ -89,7 +90,7 @@ from localsandbox_tools import tools
 results = tools.web_search("doctors in Vancouver")
 ```
 
-The helper module is syntax sugar over `hosttools.call()` and does not change
+The helper module is syntax sugar over `host_tools.call()` and does not change
 the transport or security model.
 
 ## Session Architecture
@@ -100,7 +101,7 @@ All Python execution (with or without tools) uses a **persistent subprocess
 scoped to the `LocalSandbox` lifetime**:
 
 1. The first `execute_python()` call starts the shim and runner subprocesses.
-2. The runner loads Pyodide, mounts the filesystem, and registers `hosttools`.
+2. The runner loads Pyodide, mounts the filesystem, and registers `host_tools`.
 3. Each `execute_python()` call sends code via the bridge protocol.
 4. The runner executes the code and returns a `complete` envelope.
 5. The subprocess stays alive for subsequent calls (same Pyodide instance).
@@ -125,7 +126,7 @@ subprocess.
   - Manages filesystem sync (AgentFS to/from temp dir) on each execution.
 - **Runner**
   - Owns the Pyodide runtime (persistent singleton).
-  - Registers `hosttools`.
+  - Registers `host_tools`.
   - Blocks Python execution via `run_sync` while waiting for each tool result.
 
 ## Wire Protocol
@@ -177,7 +178,7 @@ Tool calls within an execution:
 2. The SDK sends a `start` envelope with code, cwd, preload packages, and
    tool definitions (empty if no toolset).
 3. The shim mounts the filesystem (FUSE or sync) and starts `python-runner`.
-4. The runner loads Pyodide, mounts NODEFS, and registers `hosttools`.
+4. The runner loads Pyodide, mounts NODEFS, and registers `host_tools`.
 5. The runner executes the code. If tools are called, envelopes are relayed
    through the shim to the SDK and back.
 6. The runner emits `complete`. The SDK returns `PythonResult`.
@@ -214,8 +215,8 @@ exits.
 4. **Payload size limits**
    - Bound request and response byte size to prevent memory abuse.
 5. **No host object injection**
-   - Runner exposes only `hosttools.call(name, payload)` as the supported host
-     bridge.
+   - Runner exposes only the `host_tools` bridge surface
+     (`host_tools.call()` and `host_tools.search()`).
 6. **Preserve existing Deno permission boundary**
    - The bridge does not replace the current filesystem and network isolation.
    - `import js` remains constrained by the runner's Deno permissions.

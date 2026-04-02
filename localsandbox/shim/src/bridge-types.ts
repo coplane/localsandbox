@@ -13,6 +13,14 @@ interface BaseRequest {
   id: string;
 }
 
+export interface ToolManifestEntry {
+  name: string;
+  description?: string;
+  input_schema?: Record<string, unknown> | null;
+  output_schema?: Record<string, unknown> | null;
+  timeout_ms?: number;
+}
+
 export interface BashRequest extends BaseRequest {
   type: "bash";
   command: string;
@@ -88,7 +96,7 @@ export interface ExecutePythonRequest extends BaseRequest {
   code: string;
   cwd: string;
   preload_packages?: string[];
-  tools?: Array<{ name: string; [key: string]: unknown }>;
+  tools?: ToolManifestEntry[];
 }
 
 export interface ShutdownRequest extends BaseRequest {
@@ -122,7 +130,7 @@ export interface RunnerStartEnvelope {
   code: string;
   cwd: string;
   preload_packages?: string[];
-  tools?: Array<{ name: string }>;
+  tools?: ToolManifestEntry[];
 }
 
 export interface ExecuteEnvelope {

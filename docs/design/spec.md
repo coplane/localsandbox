@@ -233,7 +233,7 @@ toolset = PythonToolset(
 
 result = sandbox.execute_python(
     """
-from hosttools import call
+from host_tools import call
 print(call("echo", {"text": "hello"})["echo"])
 """,
     toolset=toolset,
