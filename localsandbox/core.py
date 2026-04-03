@@ -16,9 +16,15 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, get_type_hints
+from typing import Any, cast, get_type_hints
 
-from pydantic import TypeAdapter, ValidationError, create_model, validate_call
+from pydantic import (
+    ConfigDict,
+    TypeAdapter,
+    ValidationError,
+    create_model,
+    validate_call,
+)
 
 from localsandbox.exceptions import (
     CommandError,
@@ -197,8 +203,10 @@ def function_to_tool_definition(fn: ToolCallable) -> ToolDefinition:
 
     parameters_model = create_model(
         f"{fn.__name__.capitalize()}Parameters",
-        __config__={"extra": "forbid"},
-        **fields,
+        __config__=ConfigDict(extra="forbid"),
+        # Pyright can't prove these dynamic field names won't overlap with
+        # reserved kwargs like "__doc__" when expanded into create_model.
+        **cast(dict[str, Any], fields),
     )
     input_schema = _strip_schema_titles(parameters_model.model_json_schema())
 
