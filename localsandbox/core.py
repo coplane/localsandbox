@@ -18,7 +18,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, get_type_hints
 
-from pydantic import TypeAdapter, ValidationError, validate_call
+from pydantic import TypeAdapter, ValidationError, create_model, validate_call
 
 from localsandbox.exceptions import (
     CommandError,
@@ -170,9 +170,9 @@ def _strip_schema_titles(schema: Any) -> Any:
 def function_to_tool_definition(fn: ToolCallable) -> ToolDefinition:
     """Build a ToolDefinition from a callable's name, docstring, and hints."""
     signature = inspect.signature(fn)
-    hints = get_type_hints(fn)
-    properties: dict[str, Any] = {}
-    required: list[str] = []
+    hints = get_type_hints(fn, include_extras=True)
+
+    fields: dict[str, tuple[Any, Any]] = {}
 
     for name, parameter in signature.parameters.items():
         if name in {"self", "cls"}:
@@ -190,12 +190,17 @@ def function_to_tool_definition(fn: ToolCallable) -> ToolDefinition:
                 f"Tool {fn.__name__!r} parameter {name!r} is missing a type hint"
             )
 
-        schema = _strip_schema_titles(TypeAdapter(hints[name]).json_schema())
-        if parameter.default is inspect.Parameter.empty:
-            required.append(name)
-        else:
-            schema["default"] = parameter.default
-        properties[name] = schema
+        default = (
+            ... if parameter.default is inspect.Parameter.empty else parameter.default
+        )
+        fields[name] = (hints[name], default)
+
+    parameters_model = create_model(
+        f"{fn.__name__.capitalize()}Parameters",
+        __config__={"extra": "forbid"},
+        **fields,
+    )
+    input_schema = _strip_schema_titles(parameters_model.model_json_schema())
 
     output_schema = None
     if "return" in hints:
@@ -204,12 +209,7 @@ def function_to_tool_definition(fn: ToolCallable) -> ToolDefinition:
     return ToolDefinition(
         name=fn.__name__,
         description=_docstring_summary(fn),
-        input_schema={
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": False,
-        },
+        input_schema=input_schema,
         output_schema=output_schema,
     )
 

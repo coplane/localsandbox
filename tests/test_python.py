@@ -8,9 +8,11 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from typing import Annotated
 
 import pytest
 from PIL import Image
+from pydantic import Field
 
 from localsandbox import (
     LocalSandbox,
@@ -492,6 +494,45 @@ class TestPythonTools:
                             {"type": "null"},
                         ]
                     }
+                },
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+            },
+        )
+
+    def test_function_to_tool_definition_field(self) -> None:
+        """Inference should preserve `Field()` metadata on bound methods."""
+
+        class Helpers:
+            def repeat(
+                self,
+                text: Annotated[str, Field(description="Text to repeat", min_length=1)],
+                count: Annotated[int, Field(ge=1, le=5)] = 2,
+            ) -> dict[str, str]:
+                """Repeat text."""
+                return {"text": text * count}
+
+        assert function_to_tool_definition(Helpers().repeat) == ToolDefinition(
+            name="repeat",
+            description="Repeat text.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "description": "Text to repeat",
+                        "minLength": 1,
+                        "type": "string",
+                    },
+                    "count": {
+                        "default": 2,
+                        "maximum": 5,
+                        "minimum": 1,
+                        "type": "integer",
+                    },
                 },
                 "required": ["text"],
                 "additionalProperties": False,
