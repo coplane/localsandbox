@@ -121,7 +121,7 @@ class HistoryEntry:
 JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 ToolHandler = Callable[[dict[str, JsonValue]], JsonValue | Awaitable[JsonValue]]
-ToolCallable = Callable[..., JsonValue | Awaitable[JsonValue]]
+ToolCallable = Callable[..., Any]
 
 
 @dataclass(frozen=True)
