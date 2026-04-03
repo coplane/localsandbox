@@ -12,11 +12,13 @@ import tempfile
 import threading
 import time
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
+
+from pydantic import TypeAdapter, ValidationError, validate_call
 
 from localsandbox.exceptions import (
     CommandError,
@@ -119,6 +121,7 @@ class HistoryEntry:
 JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 ToolHandler = Callable[[dict[str, JsonValue]], JsonValue | Awaitable[JsonValue]]
+ToolCallable = Callable[..., JsonValue | Awaitable[JsonValue]]
 
 
 @dataclass(frozen=True)
@@ -138,6 +141,121 @@ class PythonToolset:
 
     definitions: list[ToolDefinition]
     handlers: dict[str, ToolHandler]
+
+
+ToolsetInput = PythonToolset | Sequence[ToolCallable]
+
+
+def _docstring_summary(value: object) -> str:
+    """Return the first non-empty line of a callable's docstring."""
+    docstring = inspect.getdoc(value)
+    if not docstring:
+        return ""
+    return docstring.strip().splitlines()[0].strip()
+
+
+def _strip_schema_titles(schema: Any) -> Any:
+    """Remove verbose Pydantic `title` metadata from generated schemas."""
+    if isinstance(schema, list):
+        return [_strip_schema_titles(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    return {
+        key: _strip_schema_titles(value)
+        for key, value in schema.items()
+        if key != "title"
+    }
+
+
+def function_to_tool_definition(fn: ToolCallable) -> ToolDefinition:
+    """Build a ToolDefinition from a callable's name, docstring, and hints."""
+    signature = inspect.signature(fn)
+    hints = get_type_hints(fn)
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+
+    for name, parameter in signature.parameters.items():
+        if name in {"self", "cls"}:
+            continue
+        if parameter.kind not in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }:
+            raise ValueError(
+                f"Tool {fn.__name__!r} parameter {name!r} must be positional/"
+                "keyword or keyword-only"
+            )
+        if name not in hints:
+            raise ValueError(
+                f"Tool {fn.__name__!r} parameter {name!r} is missing a type hint"
+            )
+
+        schema = _strip_schema_titles(TypeAdapter(hints[name]).json_schema())
+        if parameter.default is inspect.Parameter.empty:
+            required.append(name)
+        else:
+            schema["default"] = parameter.default
+        properties[name] = schema
+
+    output_schema = None
+    if "return" in hints:
+        output_schema = _strip_schema_titles(TypeAdapter(hints["return"]).json_schema())
+
+    return ToolDefinition(
+        name=fn.__name__,
+        description=_docstring_summary(fn),
+        input_schema={
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        },
+        output_schema=output_schema,
+    )
+
+
+def functions_to_toolset(functions: Sequence[ToolCallable]) -> PythonToolset:
+    """Build a PythonToolset from a sequence of plain callables."""
+    definitions = [function_to_tool_definition(fn) for fn in functions]
+
+    def _build_handler(fn: ToolCallable) -> ToolHandler:
+        validated_call = validate_call(fn)
+        hints = get_type_hints(fn)
+        output_adapter = TypeAdapter(hints["return"]) if "return" in hints else None
+
+        def _serialize_output(value: Any) -> JsonValue:
+            if output_adapter is None:
+                return value
+            try:
+                validated = output_adapter.validate_python(value)
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
+            return output_adapter.dump_python(validated, mode="json")
+
+        def handler(payload: dict[str, JsonValue]) -> JsonValue | Awaitable[JsonValue]:
+            try:
+                result = validated_call(**payload)
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
+
+            if inspect.isawaitable(result):
+
+                async def _await_and_serialize() -> JsonValue:
+                    return _serialize_output(await result)
+
+                return _await_and_serialize()
+
+            return _serialize_output(result)
+
+        return handler
+
+    return PythonToolset(
+        definitions=definitions,
+        handlers={
+            definition.name: _build_handler(fn)
+            for definition, fn in zip(definitions, functions, strict=True)
+        },
+    )
 
 
 def _json_type_name(value: object) -> str:
@@ -1259,7 +1377,7 @@ class LocalSandbox:
         code: str,
         cwd: str | None = None,
         preload_packages: list[str] | None = None,
-        toolset: PythonToolset | None = None,
+        toolset: ToolsetInput | None = None,
     ) -> PythonResult:
         """
         Execute Python code in the sandbox using Pyodide.
@@ -1272,7 +1390,7 @@ class LocalSandbox:
             code: The Python code to execute.
             cwd: Working directory for Python (default: sandbox cwd).
             preload_packages: Optional list of Pyodide packages to preload.
-            toolset: Optional set of host tools available to Python code.
+            toolset: Optional `PythonToolset` or sequence of callables exposed as tools.
 
         Returns:
             PythonResult with stdout, stderr, exit_code, and optional error.
@@ -1285,12 +1403,23 @@ class LocalSandbox:
             raise RuntimeError("LocalSandbox instance has been destroyed")
 
         effective_cwd = cwd if cwd is not None else self._cwd
+        if toolset is None or isinstance(toolset, PythonToolset):
+            resolved_toolset = toolset
+        elif isinstance(toolset, Sequence) and not isinstance(toolset, (str, bytes)):
+            functions = list(toolset)
+            if not all(callable(fn) for fn in functions):
+                raise TypeError("toolset sequences must contain only callables")
+            resolved_toolset = functions_to_toolset(functions)
+        else:
+            raise TypeError(
+                "toolset must be a PythonToolset or a sequence of callables"
+            )
 
         return self._execute_python_via_server(
             code=code,
             cwd=effective_cwd,
             preload_packages=preload_packages,
-            toolset=toolset,
+            toolset=resolved_toolset,
         )
 
     def destroy(self) -> None:
@@ -1399,7 +1528,7 @@ class LocalSandbox:
         code: str,
         cwd: str | None = None,
         preload_packages: list[str] | None = None,
-        toolset: PythonToolset | None = None,
+        toolset: ToolsetInput | None = None,
     ) -> PythonResult:
         """Async version of execute_python()."""
         return await asyncio.to_thread(

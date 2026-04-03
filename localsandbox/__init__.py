@@ -3,6 +3,8 @@
 from localsandbox.core import (
     BashResult,
     ExecutionPreset,
+    function_to_tool_definition,
+    functions_to_toolset,
     HistoryEntry,
     LocalSandbox,
     PythonToolset,
@@ -25,6 +27,8 @@ __all__ = [
     "ExecutionLimitError",
     "ExecutionPreset",
     "FileNotFoundError",
+    "function_to_tool_definition",
+    "functions_to_toolset",
     "HistoryEntry",
     "LocalSandbox",
     "LocalSandboxError",

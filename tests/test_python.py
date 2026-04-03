@@ -12,7 +12,12 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from localsandbox import LocalSandbox, PythonToolset, ToolDefinition
+from localsandbox import (
+    LocalSandbox,
+    PythonToolset,
+    ToolDefinition,
+    function_to_tool_definition,
+)
 from localsandbox.core import JsonValue
 from localsandbox.exceptions import TimeoutError
 
@@ -442,6 +447,61 @@ class TestPythonTools:
             },
         )
 
+    def test_function_to_tool_definition(self) -> None:
+        """Callable inference should derive the full tool definition."""
+
+        def greet(name: str, excited: bool = False) -> dict[str, str]:
+            """Greet a user."""
+            suffix = "!" if excited else "."
+            return {"message": f"Hello, {name}{suffix}"}
+
+        assert function_to_tool_definition(greet) == ToolDefinition(
+            name="greet",
+            description="Greet a user.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "excited": {"type": "boolean", "default": False},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+            },
+        )
+
+    def test_function_to_tool_definition_anyof(self) -> None:
+        """Inference should preserve richer Pydantic schema constructs."""
+
+        def maybe_echo(text: str | None) -> dict[str, str]:
+            """Echo text if present."""
+            return {"echo": text or ""}
+
+        assert function_to_tool_definition(maybe_echo) == ToolDefinition(
+            name="maybe_echo",
+            description="Echo text if present.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "null"},
+                        ]
+                    }
+                },
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+            },
+        )
+
     def test_python_calls_host_tool(self) -> None:
         """Python code can call an SDK-provided host tool."""
         with LocalSandbox() as sandbox:
@@ -457,6 +517,61 @@ print(response["echo"])
 
             assert result.exit_code == 0, result.stderr
             assert result.stdout.strip() == "hello bridge"
+
+    def test_python_accepts_callable_toolsets(self) -> None:
+        """execute_python() can infer a toolset from bound methods/functions."""
+
+        class Helpers:
+            def repeat(self, text: str, count: int = 2) -> dict[str, str]:
+                """Repeat text a configurable number of times."""
+                return {"text": text * count}
+
+        helpers = Helpers()
+
+        with LocalSandbox() as sandbox:
+            result = sandbox.execute_python(
+                """
+import json
+from host_tools import call, search
+
+response = call("repeat", {"text": "ha"})
+matches = search("repeat", detail="full", limit=1)
+print(response["text"])
+print(json.dumps(matches[0]))
+""",
+                toolset=[helpers.repeat],
+            )
+
+            assert result.exit_code == 0, result.stderr
+            lines = result.stdout.strip().splitlines()
+            assert lines[0] == "haha"
+            payload = json.loads(lines[1])
+            assert payload["name"] == "repeat"
+            assert (
+                payload["description"] == "Repeat text a configurable number of times."
+            )
+            assert payload["input_schema"]["required"] == ["text"]
+            assert payload["input_schema"]["properties"]["count"]["default"] == 2
+
+    def test_callable_toolsets_use_pydantic_validation(self) -> None:
+        """Inferred callable toolsets should validate inputs with Pydantic."""
+
+        def maybe_repeat(count: int | None) -> dict[str, int]:
+            """Return the requested count."""
+            return {"count": count or 0}
+
+        with LocalSandbox() as sandbox:
+            result = sandbox.execute_python(
+                """
+from host_tools import call
+
+call("maybe_repeat", {"count": "not-an-int"})
+""",
+                toolset=[maybe_repeat],
+            )
+
+            assert result.exit_code != 0
+            assert "validation_error" in result.stderr
 
     def test_python_tool_input_validation_failure(self) -> None:
         """Schema validation failures are returned through the bridge."""

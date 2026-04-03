@@ -4,7 +4,9 @@ version = "0.3.0"
 description = "A python SDK for a agentfs + just-bash + pyodide agent sandbox."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.11.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.8.19,<0.12.0"]

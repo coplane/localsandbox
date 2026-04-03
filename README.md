@@ -134,7 +134,7 @@ sandbox.execute_python(
     code: str,
     cwd: str | None = None,
     preload_packages: list[str] | None = None,
-    toolset: PythonToolset | None = None,
+    toolset: PythonToolset | Sequence[Callable[..., object]] | None = None,
 ) -> PythonResult
 ```
 
@@ -145,28 +145,16 @@ consistency across all operations (bash, Python, and file helpers).
 If `preload_packages` is provided, those Pyodide packages are loaded before
 execution. No network access is granted unless preloading is requested.
 
-If `toolset` is provided, the sandbox code can call host-side tools via `from host_tools import call` and search the declared toolset via `host_tools.search()`:
+If `toolset` is provided, the sandbox code can call host-side tools via `from host_tools import call` and search the declared toolset via `host_tools.search()`.
+
+The simplest form is to pass a list of typed Python callables. LocalSandbox infers the tool name, description, input schema, and output schema from the function signature, type hints, and docstring:
 
 ```python
-from localsandbox import LocalSandbox, PythonToolset, ToolDefinition
+from localsandbox import LocalSandbox
 
-def web_search(payload):
+def web_search(query: str) -> dict[str, list[str]]:
+    """Search the web for information."""
     return {"results": ["result1", "result2"]}
-
-toolset = PythonToolset(
-    definitions=[
-        ToolDefinition(
-            name="web_search",
-            description="Search the web for information.",
-            input_schema={
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        )
-    ],
-    handlers={"web_search": web_search},
-)
 
 with LocalSandbox() as sandbox:
     result = sandbox.execute_python(
@@ -177,9 +165,11 @@ print(search("web"))
 response = call("web_search", {"query": "hello"})
 print(response["results"])
 """,
-        toolset=toolset,
+        toolset=[web_search],
     )
 ```
+
+Alternatively you can pass an explicit `PythonToolset` if you need full control over schemas, names, or timeouts.
 
 `execute_python()` reuses a warmed Python runner when the tool manifest and `preload_packages` are unchanged. Files under `/data` always persist across calls. Python interpreter state may also persist across compatible calls, but sholudn't be depended on. The requested working directory is reapplied for each execution. Create a new `LocalSandbox` if you need a fresh interpreter.
 
