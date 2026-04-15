@@ -7,12 +7,13 @@ on:
     branches: ["*"]
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -31,7 +32,7 @@ jobs:
         uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282 # v2.0.4
 
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: uv sync --locked --dev
 
       - name: Run tests
         run: uv run pytest -v

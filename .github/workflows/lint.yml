@@ -7,12 +7,13 @@ on:
     branches: ["*"]
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -28,7 +29,7 @@ jobs:
           python-version-file: ".python-version"
 
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: uv sync --locked --dev
 
       - name: Lint
         run: uv run ruff check
