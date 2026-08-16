@@ -16,6 +16,7 @@ from pydantic import Field
 
 from localsandbox import (
     LocalSandbox,
+    PythonRuntime,
     PythonToolset,
     ToolDefinition,
     function_to_tool_definition,
@@ -353,6 +354,98 @@ print("done")
             assert result.stdout.strip() == "done"
         finally:
             sandbox.destroy()
+
+
+class TestMontyExecution:
+    """Tests for the constructor-selected Monty runtime."""
+
+    def test_runtime_is_selected_for_sandbox_lifetime(self) -> None:
+        with LocalSandbox(python_runtime="monty") as sandbox:
+            assert sandbox.python_runtime is PythonRuntime.MONTY
+            result = sandbox.execute_python('print("hello from monty")')
+
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.strip() == "hello from monty"
+
+    def test_files_persist_through_agentfs(self) -> None:
+        with LocalSandbox(
+            files={"/data/input.txt": "hello"},
+            python_runtime=PythonRuntime.MONTY,
+        ) as sandbox:
+            result = sandbox.execute_python(
+                """
+from pathlib import Path
+
+source = Path('/data/input.txt').read_text()
+Path('/data/output.txt').write_text(source.upper())
+"""
+            )
+
+            assert result.exit_code == 0, result.stderr
+            assert sandbox.read_file("/data/output.txt") == "HELLO"
+
+    def test_direct_tool_injection_and_search(self) -> None:
+        def repeat(text: str, count: int = 2) -> dict[str, str]:
+            """Repeat text a configurable number of times."""
+            return {"text": text * count}
+
+        with LocalSandbox(python_runtime="monty") as sandbox:
+            result = sandbox.execute_python(
+                """
+matches = tool_search('repeat', detail='full', limit=1)
+response = repeat(text='ha')
+print(matches[0]['name'])
+print(response['text'])
+""",
+                toolset=[repeat],
+            )
+            history_names = [entry.name for entry in sandbox.history()]
+
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.strip().splitlines() == ["repeat", "haha"]
+        assert "python_tool_call" in history_names
+
+    def test_interpreter_state_persists_between_calls(self) -> None:
+        with LocalSandbox(python_runtime="monty") as sandbox:
+            first = sandbox.execute_python("answer = 42")
+            second = sandbox.execute_python("print(answer)")
+
+        assert first.exit_code == 0, first.stderr
+        assert second.exit_code == 0, second.stderr
+        assert second.stdout.strip() == "42"
+
+    def test_runtime_error_returns_python_result(self) -> None:
+        with LocalSandbox(python_runtime="monty") as sandbox:
+            result = sandbox.execute_python("raise ValueError('bad input')")
+
+        assert result.exit_code == 1
+        assert result.error is not None
+        assert "ValueError: bad input" in result.stderr
+
+    @pytest.mark.parametrize("packages", [[], ["pillow"]])
+    def test_preload_packages_are_rejected(self, packages: list[str]) -> None:
+        with (
+            LocalSandbox(python_runtime="monty") as sandbox,
+            pytest.raises(ValueError, match="preload_packages is unavailable"),
+        ):
+            sandbox.execute_python("print('no')", preload_packages=packages)
+
+    def test_custom_working_directory_is_rejected(self) -> None:
+        with (
+            LocalSandbox(python_runtime="monty") as sandbox,
+            pytest.raises(ValueError, match="does not support working directories"),
+        ):
+            sandbox.execute_python("print('no')", cwd="/data/project")
+
+    def test_python_hints_describe_runtime_boundaries(self) -> None:
+        monty_hint = LocalSandbox.get_python_hint("monty")
+        pyodide_hint = LocalSandbox.get_python_hint(PythonRuntime.PYODIDE)
+
+        assert "pathlib" in monty_hint
+        assert "third-party packages" in monty_hint
+        assert "tool_search" in monty_hint
+        assert "host_tools.search" in pyodide_hint
+        assert "/data" in pyodide_hint
 
 
 class TestPythonTools:
@@ -719,6 +812,33 @@ print(json.dumps({"brief": brief, "full": full}))
             assert payload["full"][0]["input_schema"]["properties"]["channel"] == {
                 "type": "string"
             }
+
+    def test_python_runtimes_share_tool_search_results(self) -> None:
+        """Pyodide and Monty should expose one tool-search policy."""
+        toolset = self._search_toolset()
+        with LocalSandbox() as pyodide_sandbox:
+            pyodide_result = pyodide_sandbox.execute_python(
+                """
+import json
+from host_tools import search
+
+print(json.dumps(search('slack message', detail='full', limit=2)))
+""",
+                toolset=toolset,
+            )
+        with LocalSandbox(python_runtime="monty") as monty_sandbox:
+            monty_result = monty_sandbox.execute_python(
+                """
+import json
+
+print(json.dumps(tool_search('slack message', detail='full', limit=2)))
+""",
+                toolset=toolset,
+            )
+
+        assert pyodide_result.exit_code == 0, pyodide_result.stderr
+        assert monty_result.exit_code == 0, monty_result.stderr
+        assert json.loads(pyodide_result.stdout) == json.loads(monty_result.stdout)
 
     def test_python_execution_state_persists_between_calls(self) -> None:
         """Compatible executions reuse interpreter state."""

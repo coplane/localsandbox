@@ -19,6 +19,7 @@ import process from "node:process";
 import { createInterface, type Interface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import { INTERNAL_TOOL_SEARCH_NAME } from "./bridge-types.ts";
 import type {
   CompleteEnvelope,
   FatalErrorEnvelope,
@@ -378,6 +379,26 @@ async function handleHistory(
 ): Promise<void> {
   const entries = await agent.tools.getRecent(0, req.limit);
   await respond(req.id, { entries });
+}
+
+async function handleMontyToolCall(
+  agent: AgentFS,
+  req: ServerRequest & { type: "record_monty_tool_call" },
+): Promise<void> {
+  await agent.tools.record(
+    "python_tool_call",
+    req.started_at,
+    req.completed_at,
+    {
+      sessionId: "monty",
+      toolName: req.name,
+      requestPreview: truncateText(req.payload),
+    },
+    req.error === null
+      ? { success: true, responsePreview: truncateText(req.result) }
+      : { success: false, errorType: req.error },
+  );
+  await respond(req.id, { success: true });
 }
 
 // ============================================================================
@@ -754,7 +775,6 @@ class PythonSession {
       code: req.code,
       cwd: req.cwd,
       preload_packages: req.preload_packages ?? [],
-      tools: req.tools ?? [],
     };
 
     this.proc.stdin.write(JSON.stringify(envelope) + "\n");
@@ -801,7 +821,8 @@ class PythonSession {
       }
 
       if (envelope.type === "tool_call") {
-        toolCallCount += 1;
+        const recordToolCall = envelope.name !== INTERNAL_TOOL_SEARCH_NAME;
+        if (recordToolCall) toolCallCount += 1;
         const toolStartedAt = Date.now();
 
         // Forward tool call to SDK.
@@ -822,22 +843,24 @@ class PythonSession {
         const toolResponse = JSON.parse(responseLine) as SdkToolResponse;
         const toolCompletedAt = Date.now();
 
-        await this.agent.tools.record(
-          "python_tool_call",
-          toolStartedAt,
-          toolCompletedAt,
-          {
-            sessionId: this.sessionId,
-            toolName: envelope.name,
-            requestPreview: truncateText(envelope.payload),
-          },
-          toolResponse.type === "tool_result"
-            ? {
-              success: true,
-              responsePreview: truncateText(toolResponse.payload),
-            }
-            : { success: false, errorType: toolResponse.error_type },
-        );
+        if (recordToolCall) {
+          await this.agent.tools.record(
+            "python_tool_call",
+            toolStartedAt,
+            toolCompletedAt,
+            {
+              sessionId: this.sessionId,
+              toolName: envelope.name,
+              requestPreview: truncateText(envelope.payload),
+            },
+            toolResponse.type === "tool_result"
+              ? {
+                success: true,
+                responsePreview: truncateText(toolResponse.payload),
+              }
+              : { success: false, errorType: toolResponse.error_type },
+          );
+        }
 
         await writeJsonLine(this.proc.stdin!, toolResponse);
         continue;
@@ -915,6 +938,54 @@ class PythonSession {
   }
 }
 
+class MontyFilesystem {
+  private tempDir: string | null = null;
+
+  constructor(private readonly agent: AgentFS) {}
+
+  async prepare(
+    req: ServerRequest & { type: "prepare_monty_filesystem" },
+  ): Promise<void> {
+    if (!this.tempDir) {
+      this.tempDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "localsandbox-monty-"),
+      );
+    }
+    await syncAgentFSToDir(this.agent.fs, this.tempDir);
+    await respond(req.id, { fs_root: this.tempDir });
+  }
+
+  async finish(
+    req: ServerRequest & { type: "finish_monty_filesystem" },
+  ): Promise<void> {
+    if (!this.tempDir) throw new Error("Monty filesystem was not prepared");
+
+    await syncDirToAgentFS(this.tempDir, this.agent.fs);
+    await this.agent.tools.record(
+      "python",
+      req.started_at,
+      Date.now(),
+      {
+        codeLength: req.code_length,
+        cwd: req.cwd,
+        preloadPackages: "",
+        sessionId: "monty",
+        toolCallCount: req.tool_call_count,
+        runtime: "monty",
+      },
+      { exitCode: req.exit_code },
+    );
+    await respond(req.id, { success: true });
+  }
+
+  stop(): void {
+    if (this.tempDir) {
+      cleanupTempDir(this.tempDir);
+      this.tempDir = null;
+    }
+  }
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -933,6 +1004,7 @@ async function main(): Promise<void> {
     createInterface({ input: process.stdin, crlfDelay: Infinity }),
   );
   const pythonSession = new PythonSession(agent, dbPath);
+  const montyFilesystem = new MontyFilesystem(agent);
 
   // Signal that the server is ready.
   await writeJsonLine(process.stdout, { type: "ready" });
@@ -997,9 +1069,19 @@ async function main(): Promise<void> {
           case "execute_python":
             await pythonSession.execute(req, sdkReader);
             break;
+          case "prepare_monty_filesystem":
+            await montyFilesystem.prepare(req);
+            break;
+          case "finish_monty_filesystem":
+            await montyFilesystem.finish(req);
+            break;
+          case "record_monty_tool_call":
+            await handleMontyToolCall(agent, req);
+            break;
           case "shutdown":
             await respond(req.id, { success: true });
             await pythonSession.stop();
+            montyFilesystem.stop();
             await agent.close();
             return;
           default:
@@ -1021,6 +1103,7 @@ async function main(): Promise<void> {
     }
   } finally {
     await pythonSession.stop();
+    montyFilesystem.stop();
     await agent.close();
   }
 }

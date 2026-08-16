@@ -409,7 +409,7 @@ class TestHistory:
         with LocalSandbox() as sandbox:
             try:
                 sandbox.bash("exit 1")
-            except Exception:
+            except CommandError:
                 pass  # Expected to fail
 
             history = sandbox.history()

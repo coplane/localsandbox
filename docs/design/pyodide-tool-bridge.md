@@ -11,9 +11,8 @@ For LocalSandbox, we want a more explicit pattern: sandboxed Python imports a
 known bridge module and invokes named tool calls through that bridge. This
 keeps the current per-tool RPC model, but makes the crossing point explicit.
 
-This proposal does **not** attempt to implement Cloudflare-style fixed-surface
-discovery yet. The bridge should be compatible with adding helpers such as
-`search_tools` later, but v1 keeps the existing per-tool model.
+The bridge also exposes host-side tool discovery through `host_tools.search()`.
+Individual tool execution still uses the per-tool RPC model.
 
 ## Goals
 
@@ -81,6 +80,10 @@ from host_tools import call, search
 results = call("web_search", {"query": "doctors in Vancouver"})
 matches = search("web")
 ```
+
+`host_tools.search()` uses the same relay as a tool call, targeting a reserved
+internal handler in the Python SDK. Ranking is not implemented in the Deno
+runner; Pyodide and Monty therefore share one host-side search policy.
 
 Optionally, LocalSandbox can generate a helper module for convenience:
 
@@ -155,7 +158,7 @@ Use newline-delimited JSON envelopes over stdio.
 ### Example (multi-execution session)
 
 ```json
-{"type":"start","code":"x = 1","cwd":"/data","tools":[{"name":"web_search"}]}
+{"type":"start","code":"x = 1","cwd":"/data"}
 {"type":"complete","stdout":"","stderr":"","exit_code":0}
 {"type":"execute","code":"print(x)","cwd":"/data"}
 {"type":"complete","stdout":"1\n","stderr":"","exit_code":0}
@@ -164,7 +167,7 @@ Use newline-delimited JSON envelopes over stdio.
 Tool calls within an execution:
 
 ```json
-{"type":"start","code":"...","cwd":"/data","tools":[{"name":"web_search"}]}
+{"type":"start","code":"...","cwd":"/data"}
 {"type":"tool_call","id":"t1","name":"web_search","payload":{"query":"doctors in Vancouver"}}
 {"type":"tool_result","id":"t1","payload":{"results":[{"title":"..."}]}}
 {"type":"complete","stdout":"","stderr":"","exit_code":0}

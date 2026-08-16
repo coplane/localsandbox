@@ -8,6 +8,7 @@
 
 import { loadPyodide, type PyodideInterface } from "pyodide";
 
+import { INTERNAL_TOOL_SEARCH_NAME } from "./bridge-types.ts";
 import type {
   CompleteEnvelope,
   ExecuteEnvelope,
@@ -15,10 +16,8 @@ import type {
   RunnerStartEnvelope,
   ToolCallEnvelope,
   ToolErrorEnvelope,
-  ToolManifestEntry,
   ToolResultEnvelope,
 } from "./bridge-types.ts";
-import { type BM25Retriever, index as indexBm25 } from "./bm25.ts";
 
 interface RunnerInput {
   fsRoot: string;
@@ -36,39 +35,6 @@ let capturedStdout = "";
 let capturedStderr = "";
 const loadedPackages = new Set<string>();
 const encoder = new TextEncoder();
-
-type ToolSearchDetail = "brief" | "full";
-
-function formatSearchResult(
-  manifest: ToolManifestEntry,
-  score: number,
-  detail: ToolSearchDetail,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = {
-    name: manifest.name,
-    description: manifest.description ?? "",
-    score: Number(score.toFixed(4)),
-  };
-
-  if (detail === "full") {
-    result.input_schema = manifest.input_schema ?? null;
-    result.output_schema = manifest.output_schema ?? null;
-    result.timeout_ms = manifest.timeout_ms ?? null;
-  }
-
-  return result;
-}
-
-function searchTools(
-  retriever: BM25Retriever<ToolManifestEntry>,
-  query: string,
-  detail: ToolSearchDetail,
-  limit: number,
-): Array<Record<string, unknown>> {
-  return retriever.search(query, limit, { minScoreRatio: 0.15 }).map((entry) =>
-    formatSearchResult(entry.document, entry.score, detail)
-  );
-}
 
 // Prevent unhandled promise rejections (e.g. from async Python/JS interop)
 // from crashing the Deno process. Inspired by DSPy's runner.js approach.
@@ -282,30 +248,6 @@ async function runSession(
   });
 
   const toolSession = new ToolCallSession(lineReader);
-  const toolSearchRetriever = indexBm25(start.tools ?? [], {
-    fields: [
-      {
-        extractText: (tool) => tool.name,
-        weight: 3.5,
-      },
-      {
-        extractText: (tool) => tool.description ?? "",
-        weight: 1.5,
-      },
-      {
-        extractText: (tool) => {
-          const inputSchema = tool.input_schema == null
-            ? ""
-            : JSON.stringify(tool.input_schema);
-          const outputSchema = tool.output_schema == null
-            ? ""
-            : JSON.stringify(tool.output_schema);
-          return `${inputSchema} ${outputSchema}`;
-        },
-        weight: 0.35,
-      },
-    ],
-  });
 
   // Return structured error objects instead of throwing from JS so that
   // unhandled rejections don't crash Deno. The Python wrapper detects the
@@ -340,9 +282,18 @@ async function runSession(
       }
       const searchDetail = detail === "full" ? "full" : "brief";
       const searchLimit = typeof limit === "number" ? limit : 10;
-      return await Promise.resolve(
-        searchTools(toolSearchRetriever, query, searchDetail, searchLimit),
-      );
+      try {
+        return await toolSession.callTool(INTERNAL_TOOL_SEARCH_NAME, {
+          query,
+          detail: searchDetail,
+          limit: searchLimit,
+        });
+      } catch (error) {
+        return {
+          [ERROR_SENTINEL_KEY]: true,
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
     },
     error_key: ERROR_SENTINEL_KEY,
   });
