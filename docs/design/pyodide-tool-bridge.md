@@ -47,6 +47,7 @@ JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 ToolHandler = Callable[[dict[str, JsonValue]], JsonValue | Awaitable[JsonValue]]
 
+
 @dataclass(frozen=True)
 class ToolDefinition:
     name: str
@@ -55,10 +56,12 @@ class ToolDefinition:
     output_schema: dict[str, Any] | None = None
     timeout_ms: int = 30_000
 
+
 @dataclass(frozen=True)
 class PythonToolset:
     definitions: list[ToolDefinition]
     handlers: dict[str, ToolHandler]
+
 
 result = sandbox.execute_python(
     code=agent_code,

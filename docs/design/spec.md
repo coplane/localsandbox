@@ -122,17 +122,17 @@ from pathlib import Path
 # All paths use the /data prefix for consistency with bash and Python
 sandbox = LocalSandbox(
     files={
-        '/data/main.py': 'print("hello")',
-        '/data/data.json': Path('./local/data.json'),  # snapshot from local
-        '/data/image.png': b'\\x89PNG...',             # binary content
+        "/data/main.py": 'print("hello")',
+        "/data/data.json": Path("./local/data.json"),  # snapshot from local
+        "/data/image.png": b"\\x89PNG...",  # binary content
     },
     preset=ExecutionPreset.NORMAL,  # or STRICT, PERMISSIVE
-    cwd='/data',  # default working directory
+    cwd="/data",  # default working directory
 )
 
 # Execute bash commands
-result = sandbox.bash('ls -la')
-result = sandbox.bash('cat main.py | head -5')
+result = sandbox.bash("ls -la")
+result = sandbox.bash("cat main.py | head -5")
 result = sandbox.bash('echo "new content" > output.txt')
 
 # Clean up
@@ -152,8 +152,8 @@ sandbox.destroy()
 
 ```python
 class ExecutionPreset(Enum):
-    STRICT = "strict"       # 100 loop iterations, 500 commands max
-    NORMAL = "normal"       # 1,000 loop iterations, 5,000 commands max
+    STRICT = "strict"  # 100 loop iterations, 500 commands max
+    NORMAL = "normal"  # 1,000 loop iterations, 5,000 commands max
     PERMISSIVE = "permissive"  # 10,000 loop iterations, 50,000 commands max
 ```
 
@@ -205,8 +205,10 @@ Optional host tool bridge:
 ```python
 from localsandbox import LocalSandbox, PythonToolset, ToolDefinition
 
+
 def echo(payload):
     return {"echo": payload["text"]}
+
 
 toolset = PythonToolset(
     definitions=[
@@ -267,31 +269,43 @@ class PythonResult:
 class LocalSandboxError(Exception):
     """Base exception for all LocalSandbox errors"""
 
+
 class CommandError(LocalSandboxError):
     """Bash command returned non-zero exit code"""
+
     exit_code: int
     stdout: str
     stderr: str
 
+
 class FileNotFoundError(CommandError):
     """File or directory not found"""
+
     path: str
+
 
 class PermissionError(CommandError):
     """Permission denied"""
+
     path: str
+
 
 class TimeoutError(LocalSandboxError):
     """Command exceeded time limit"""
+
     timeout_ms: int
+
 
 class ExecutionLimitError(LocalSandboxError):
     """Loop iteration or command count limit exceeded"""
+
     limit_type: str  # 'loop_iterations' | 'command_count'
     limit_value: int
 
+
 class SubprocessCrashed(LocalSandboxError):
     """Shim subprocess terminated unexpectedly (OOM, segfault, killed)"""
+
     signal: int | None
 ```
 
@@ -313,19 +327,19 @@ Convenience methods for direct filesystem access without bash:
 
 ```python
 # Read file contents
-content: str = sandbox.read_file('/data/main.py')
+content: str = sandbox.read_file("/data/main.py")
 
 # Write file contents
-sandbox.write_file('/data/output.txt', 'new content')
+sandbox.write_file("/data/output.txt", "new content")
 
 # List directory
-files: list[str] = sandbox.list_files('/data')
+files: list[str] = sandbox.list_files("/data")
 
 # Check existence
-exists: bool = sandbox.exists('/data/main.py')
+exists: bool = sandbox.exists("/data/main.py")
 
 # Delete file
-sandbox.delete_file('/data/temp.txt')
+sandbox.delete_file("/data/temp.txt")
 ```
 
 All paths use the `/data` prefix for consistency with bash and Python execution.
@@ -341,18 +355,18 @@ Export the sandbox state to persist across sessions:
 snapshot: bytes = sandbox.export_snapshot()
 
 # Store it however you want
-with open('agent_state.db', 'wb') as f:
+with open("agent_state.db", "wb") as f:
     f.write(snapshot)
 # Or upload to S3, Redis, database, etc.
 
 # Later, resume from the snapshot
-with open('agent_state.db', 'rb') as f:
+with open("agent_state.db", "rb") as f:
     saved_snapshot = f.read()
 
 resumed_sandbox = LocalSandbox(snapshot=saved_snapshot)
 
 # Continues where it left off - all files and KV state preserved
-result = resumed_sandbox.bash('ls /data')
+result = resumed_sandbox.bash("ls /data")
 ```
 
 The `snapshot` parameter is mutually exclusive with `files`. If both are
@@ -374,9 +388,9 @@ Separate API for agent state persistence:
 
 ```python
 # String values only
-sandbox.kv.set('conversation_id', 'abc123')
-value: str | None = sandbox.kv.get('conversation_id')
-sandbox.kv.delete('conversation_id')
+sandbox.kv.set("conversation_id", "abc123")
+value: str | None = sandbox.kv.get("conversation_id")
+sandbox.kv.delete("conversation_id")
 
 # List all keys
 keys: list[str] = sandbox.kv.keys()
@@ -399,10 +413,10 @@ import asyncio
 sandbox = LocalSandbox(files={...})
 
 # Sync usage
-result = sandbox.bash('ls')
+result = sandbox.bash("ls")
 
 # Async wrapper (runs in thread pool)
-result = await sandbox.abash('ls')
+result = await sandbox.abash("ls")
 await sandbox.adestroy()
 ```
 
@@ -436,7 +450,7 @@ sandbox = LocalSandbox(files={...})
 ### Usage
 
 ```python
-result = sandbox.bash('...')
+result = sandbox.bash("...")
 ```
 
 - First call starts the persistent Deno server
@@ -538,11 +552,13 @@ from localsandbox import LocalSandbox
 
 sandbox = LocalSandbox(files={...})
 
+
 @tool
 def execute_bash(command: str) -> str:
     """Execute a bash command in the sandbox."""
     result = sandbox.bash(command)
     return result.stdout
+
 
 @tool
 def read_sandbox_file(path: str) -> str:
@@ -559,13 +575,12 @@ tools = [
         "description": "Execute bash commands in sandbox",
         "input_schema": {
             "type": "object",
-            "properties": {
-                "command": {"type": "string"}
-            },
-            "required": ["command"]
-        }
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
     }
 ]
+
 
 def handle_tool_call(name, input):
     if name == "bash":
@@ -582,9 +597,9 @@ from pathlib import Path
 # All paths use /data prefix for consistency
 sandbox = LocalSandbox(
     files={
-        '/data/project/src/main.py': Path('./src/main.py'),
-        '/data/project/src/utils.py': Path('./src/utils.py'),
-        '/data/project/tests/test_main.py': Path('./tests/test_main.py'),
+        "/data/project/src/main.py": Path("./src/main.py"),
+        "/data/project/src/utils.py": Path("./src/utils.py"),
+        "/data/project/tests/test_main.py": Path("./tests/test_main.py"),
     },
     preset=ExecutionPreset.NORMAL,
 )
@@ -592,14 +607,16 @@ sandbox = LocalSandbox(
 # Agent can now explore
 result = sandbox.bash('find /data/project -name "*.py" | head -20')
 result = sandbox.bash('grep -r "def " /data/project/src | wc -l')
-result = sandbox.bash('cat /data/project/src/main.py | head -50')
+result = sandbox.bash("cat /data/project/src/main.py | head -50")
 
 # Agent can write analysis
 sandbox.bash('echo "# Analysis Report" > /data/project/analysis.md')
-sandbox.bash('echo "Found $(grep -r "TODO" /data/project | wc -l) TODOs" >> /data/project/analysis.md')
+sandbox.bash(
+    'echo "Found $(grep -r "TODO" /data/project | wc -l) TODOs" >> /data/project/analysis.md'
+)
 
 # Retrieve results
-report = sandbox.read_file('/data/project/analysis.md')
+report = sandbox.read_file("/data/project/analysis.md")
 
 sandbox.destroy()
 ```
@@ -612,18 +629,21 @@ from localsandbox import LocalSandbox
 
 r = redis.Redis()
 
+
 def get_or_create_sandbox(session_id: str) -> LocalSandbox:
     """Resume existing sandbox or create new one."""
     snapshot = r.get(f"sandbox:{session_id}")
     if snapshot:
         return LocalSandbox(snapshot=snapshot)
-    return LocalSandbox(files={'/data/workspace/notes.txt': ''})
+    return LocalSandbox(files={"/data/workspace/notes.txt": ""})
+
 
 def save_sandbox(session_id: str, sandbox: LocalSandbox):
     """Persist sandbox state to Redis."""
     snapshot = sandbox.export_snapshot()
     r.set(f"sandbox:{session_id}", snapshot, ex=86400)  # 24h TTL
     sandbox.destroy()
+
 
 # Usage in an agent loop
 sandbox = get_or_create_sandbox("user-123")
@@ -632,7 +652,7 @@ save_sandbox("user-123", sandbox)
 
 # Later, in another process/session
 sandbox = get_or_create_sandbox("user-123")
-result = sandbox.bash('cat /data/workspace/notes.txt')  # Contains previous notes
+result = sandbox.bash("cat /data/workspace/notes.txt")  # Contains previous notes
 ```
 
 ## Testing
@@ -643,24 +663,27 @@ No mock implementation provided. Test against real sandboxes:
 import pytest
 from localsandbox import LocalSandbox
 
+
 def test_file_creation():
     sandbox = LocalSandbox()
     sandbox.bash('echo "test" > /data/test.txt')
 
-    content = sandbox.read_file('/data/test.txt')
+    content = sandbox.read_file("/data/test.txt")
     assert content.strip() == "test"
 
     sandbox.destroy()
 
+
 @pytest.fixture
 def sandbox():
-    s = LocalSandbox(files={'/data/data.txt': 'initial'})
+    s = LocalSandbox(files={"/data/data.txt": "initial"})
     yield s
     s.destroy()
 
+
 def test_with_fixture(sandbox):
-    result = sandbox.bash('cat /data/data.txt')
-    assert result.stdout.strip() == 'initial'
+    result = sandbox.bash("cat /data/data.txt")
+    assert result.stdout.strip() == "initial"
 ```
 
 ## Future Considerations (Not in v1)

@@ -164,9 +164,11 @@ The simplest form is to pass a list of typed Python callables. LocalSandbox infe
 ```python
 from localsandbox import LocalSandbox
 
+
 def web_search(query: str) -> dict[str, list[str]]:
     """Search the web for information."""
     return {"results": ["result1", "result2"]}
+
 
 with LocalSandbox() as sandbox:
     result = sandbox.execute_python(
@@ -255,11 +257,13 @@ from localsandbox import LocalSandbox
 
 with LocalSandbox() as sandbox:
     sandbox.bash('echo "hello"')
-    sandbox.bash('ls -la')
+    sandbox.bash("ls -la")
 
     history = sandbox.history()
     for entry in history:
-        print(f"Command: {entry.parameters['command']}, Exit: {entry.result['exitCode']}")
+        print(
+            f"Command: {entry.parameters['command']}, Exit: {entry.result['exitCode']}"
+        )
 ```
 
 #### Snapshot & Resume
@@ -286,6 +290,7 @@ All methods have async versions prefixed with `a`:
 import asyncio
 from localsandbox import LocalSandbox
 
+
 async def main():
     sandbox = LocalSandbox()
     try:
@@ -296,6 +301,7 @@ async def main():
         value = await sandbox.kv.aget("key")
     finally:
         await sandbox.adestroy()
+
 
 asyncio.run(main())
 ```
