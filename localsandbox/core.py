@@ -1151,34 +1151,39 @@ class LocalSandbox:
                     error=error,
                 )
             except Exception as exc:
+                if self._destroyed:
+                    raise RuntimeError(
+                        "LocalSandbox instance has been destroyed"
+                    ) from exc
                 from localsandbox._monty import MontyWorkerCrashed
 
                 if isinstance(exc, MontyWorkerCrashed):
                     raise SubprocessCrashed(f"Monty worker crashed: {exc}") from exc
                 raise
             finally:
-                for tool_call in tool_calls:
+                if not self._destroyed:
+                    for tool_call in tool_calls:
+                        self._send_request(
+                            {
+                                "type": "record_monty_tool_call",
+                                "name": tool_call.name,
+                                "started_at": tool_call.started_at,
+                                "completed_at": tool_call.completed_at,
+                                "payload": tool_call.payload,
+                                "result": tool_call.result,
+                                "error": tool_call.error,
+                            }
+                        )
                     self._send_request(
                         {
-                            "type": "record_monty_tool_call",
-                            "name": tool_call.name,
-                            "started_at": tool_call.started_at,
-                            "completed_at": tool_call.completed_at,
-                            "payload": tool_call.payload,
-                            "result": tool_call.result,
-                            "error": tool_call.error,
+                            "type": "finish_monty_filesystem",
+                            "started_at": started_at,
+                            "code_length": len(code),
+                            "cwd": cwd,
+                            "tool_call_count": len(tool_calls),
+                            "exit_code": exit_code,
                         }
                     )
-                self._send_request(
-                    {
-                        "type": "finish_monty_filesystem",
-                        "started_at": started_at,
-                        "code_length": len(code),
-                        "cwd": cwd,
-                        "tool_call_count": len(tool_calls),
-                        "exit_code": exit_code,
-                    }
-                )
 
     def _execute_python_via_server(
         self,
@@ -1743,6 +1748,7 @@ class LocalSandbox:
         """
         if self._destroyed:
             return
+        self._destroyed = True
 
         if self._monty_runtime is not None:
             self._monty_runtime.close()
@@ -1768,8 +1774,6 @@ class LocalSandbox:
                 self._temp_dir.rmdir()
             except OSError:
                 pass
-
-        self._destroyed = True
 
     def __enter__(self) -> "LocalSandbox":  # noqa: PYI034
         """Context manager entry - returns self."""

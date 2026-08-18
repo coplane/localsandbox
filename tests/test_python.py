@@ -6,6 +6,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Annotated
@@ -421,6 +422,35 @@ print(response['text'])
         assert result.exit_code == 1
         assert result.error is not None
         assert "ValueError: bad input" in result.stderr
+
+    @pytest.mark.asyncio
+    async def test_destroy_interrupts_active_execution(self) -> None:
+        execution_started = threading.Event()
+        release_execution = threading.Event()
+
+        def wait_for_release() -> str:
+            execution_started.set()
+            release_execution.wait(timeout=5)
+            return "released"
+
+        sandbox = LocalSandbox(python_runtime="monty")
+        execution = asyncio.create_task(
+            sandbox.aexecute_python(
+                "print(wait_for_release())",
+                toolset=[wait_for_release],
+            )
+        )
+        assert await asyncio.to_thread(execution_started.wait, 5)
+
+        destruction = asyncio.create_task(sandbox.adestroy())
+        async with asyncio.timeout(5):
+            while not sandbox._destroyed:
+                await asyncio.sleep(0)
+        release_execution.set()
+
+        with pytest.raises(RuntimeError, match="has been destroyed"):
+            await execution
+        await destruction
 
     @pytest.mark.parametrize("packages", [[], ["pillow"]])
     def test_preload_packages_are_rejected(self, packages: list[str]) -> None:
