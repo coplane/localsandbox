@@ -8,7 +8,9 @@ same virtual filesystem.
 ```python
 with LocalSandbox() as sandbox:
     sandbox.bash('echo "hello" > /data.txt')
-    result = sandbox.execute_python('print(open("/data/data.txt").read())')  # prints "hello"
+    result = sandbox.execute_python(
+        'print(open("/data/data.txt").read())'
+    )  # prints "hello"
 ```
 
 Optional package preloading:
@@ -163,7 +165,8 @@ ephemeral unless we sync `site-packages` (not currently implemented).
 
 ```python
 import micropip
-await micropip.install('requests')
+
+await micropip.install("requests")
 import requests
 ```
 

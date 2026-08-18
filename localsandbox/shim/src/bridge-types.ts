@@ -9,6 +9,8 @@
 // SDK ↔ Server protocol
 // ============================================================================
 
+export const INTERNAL_TOOL_SEARCH_NAME = "_localsandbox_tool_search";
+
 interface BaseRequest {
   id: string;
 }
@@ -99,6 +101,29 @@ export interface ExecutePythonRequest extends BaseRequest {
   tools?: ToolManifestEntry[];
 }
 
+export interface PrepareMontyFilesystemRequest extends BaseRequest {
+  type: "prepare_monty_filesystem";
+}
+
+export interface FinishMontyFilesystemRequest extends BaseRequest {
+  type: "finish_monty_filesystem";
+  started_at: number;
+  code_length: number;
+  cwd: string;
+  tool_call_count: number;
+  exit_code: number;
+}
+
+export interface RecordMontyToolCallRequest extends BaseRequest {
+  type: "record_monty_tool_call";
+  name: string;
+  started_at: number;
+  completed_at: number;
+  payload: unknown;
+  result: unknown;
+  error: string | null;
+}
+
 export interface ShutdownRequest extends BaseRequest {
   type: "shutdown";
 }
@@ -118,6 +143,9 @@ export type ServerRequest =
   | CheckpointRequest
   | HistoryRequest
   | ExecutePythonRequest
+  | PrepareMontyFilesystemRequest
+  | FinishMontyFilesystemRequest
+  | RecordMontyToolCallRequest
   | ShutdownRequest;
 
 // ============================================================================
@@ -130,7 +158,6 @@ export interface RunnerStartEnvelope {
   code: string;
   cwd: string;
   preload_packages?: string[];
-  tools?: ToolManifestEntry[];
 }
 
 export interface ExecuteEnvelope {

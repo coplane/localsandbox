@@ -6,6 +6,7 @@ import base64
 import concurrent.futures
 import inspect
 import json
+import keyword
 import re
 import subprocess
 import tempfile
@@ -14,9 +15,9 @@ import time
 import weakref
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
-from typing import Any, cast, get_type_hints
+from typing import Any, Protocol, cast, get_type_hints
 
 from pydantic import (
     ConfigDict,
@@ -34,6 +35,7 @@ from localsandbox.exceptions import (
     SubprocessCrashed,
     TimeoutError,
 )
+from localsandbox.tool_search import SearchableTool, search_tools
 
 
 def _get_server_path() -> Path:
@@ -53,6 +55,13 @@ class ExecutionPreset(Enum):
     PERMISSIVE = "permissive"  # 10,000 loop iterations, 50,000 commands max
 
 
+class PythonRuntime(StrEnum):
+    """Python execution backend owned by a LocalSandbox instance."""
+
+    PYODIDE = "pyodide"
+    MONTY = "monty"
+
+
 # Preset limit values
 _PRESET_LIMITS: dict[ExecutionPreset, dict[str, int]] = {
     ExecutionPreset.STRICT: {
@@ -69,6 +78,8 @@ _PRESET_LIMITS: dict[ExecutionPreset, dict[str, int]] = {
     },
 }
 
+_INTERNAL_TOOL_SEARCH_NAME = "_localsandbox_tool_search"
+
 # Global registry of active LocalSandbox instances for atexit cleanup
 # Uses weak references so instances can be garbage collected normally
 _active_instances: weakref.WeakSet["LocalSandbox"] = weakref.WeakSet()
@@ -80,7 +91,7 @@ def _cleanup_all_instances() -> None:
     for instance in list(_active_instances):
         try:
             instance.destroy()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - atexit cleanup is best effort
             pass  # Ignore errors during cleanup
 
 
@@ -132,7 +143,7 @@ ToolCallable = Callable[..., Any]
 
 @dataclass(frozen=True)
 class ToolDefinition:
-    """Definition of a host tool callable from Pyodide."""
+    """Definition of a host tool callable from sandboxed Python."""
 
     name: str
     description: str
@@ -150,6 +161,27 @@ class PythonToolset:
 
 
 ToolsetInput = PythonToolset | Sequence[ToolCallable]
+
+
+class _MontyRuntimeProtocol(Protocol):
+    def execute(
+        self,
+        code: str,
+        filesystem_root: Path,
+        external_lookup: dict[str, Callable[..., Any]],
+    ) -> tuple[str, str, int, str | None]: ...
+
+    def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class _MontyToolCall:
+    name: str
+    started_at: int
+    completed_at: int
+    payload: dict[str, JsonValue]
+    result: JsonValue | None
+    error: str | None
 
 
 def _docstring_summary(value: object) -> str:
@@ -519,6 +551,7 @@ class LocalSandbox:
         snapshot: bytes | None = None,
         cwd: str = "/data",
         preset: ExecutionPreset = ExecutionPreset.NORMAL,
+        python_runtime: PythonRuntime | str = PythonRuntime.PYODIDE,
     ) -> None:
         """
         Create a new LocalSandbox.
@@ -531,6 +564,7 @@ class LocalSandbox:
                       exclusive with `files`).
             cwd: Initial working directory (default: /data).
             preset: Execution limits preset (STRICT, NORMAL, or PERMISSIVE).
+            python_runtime: Python backend for this sandbox (`pyodide` or `monty`).
 
         Raises:
             ValueError: If both `files` and `snapshot` are provided.
@@ -538,6 +572,26 @@ class LocalSandbox:
         """
         if files is not None and snapshot is not None:
             raise ValueError("Cannot provide both 'files' and 'snapshot'")
+
+        try:
+            self._python_runtime = PythonRuntime(python_runtime)
+        except ValueError as exc:
+            supported = ", ".join(runtime.value for runtime in PythonRuntime)
+            raise ValueError(
+                f"Unsupported Python runtime {python_runtime!r}; expected one of: "
+                f"{supported}"
+            ) from exc
+
+        monty_runtime_class: Callable[[], _MontyRuntimeProtocol] | None = None
+        if self._python_runtime is PythonRuntime.MONTY:
+            if cwd != "/data":
+                raise ValueError("The Monty runtime requires cwd='/data'")
+            # Monty is optional so Pyodide users do not need its native worker package.
+            from localsandbox._monty import MontyRuntime
+
+            monty_runtime_class = MontyRuntime
+
+        self._monty_runtime: _MontyRuntimeProtocol | None = None
 
         self._server_path = _get_server_path()
         self._cwd = cwd
@@ -574,6 +628,54 @@ class LocalSandbox:
         # Seed initial files if provided
         if files:
             self._seed_files(files)
+
+        if monty_runtime_class is not None:
+            try:
+                self._monty_runtime = monty_runtime_class()
+            except Exception:
+                self.destroy()
+                raise
+
+    @property
+    def python_runtime(self) -> PythonRuntime:
+        """Return the Python backend selected for this sandbox."""
+        return self._python_runtime
+
+    @staticmethod
+    def get_python_hint(
+        python_runtime: PythonRuntime | str = PythonRuntime.PYODIDE,
+    ) -> str:
+        """Return concise agent instructions for a Python runtime."""
+        try:
+            runtime = PythonRuntime(python_runtime)
+        except ValueError as exc:
+            supported = ", ".join(item.value for item in PythonRuntime)
+            raise ValueError(
+                f"Unsupported Python runtime {python_runtime!r}; expected one of: "
+                f"{supported}"
+            ) from exc
+
+        if runtime is PythonRuntime.MONTY:
+            return (
+                "Python runs in Monty, a deliberately limited Python runtime. "
+                "Use only its supported built-ins and standard-library subset; "
+                "third-party packages and package installation are unavailable. "
+                "Use open() or pathlib with absolute /data paths for persistent files; "
+                "relative paths and os filesystem helpers are unavailable. Network and "
+                "host environment access are blocked. Injected host tools are called "
+                "directly as Python functions, and tool_search(query, detail='brief', "
+                "limit=10) discovers available tools."
+            )
+
+        return (
+            "Python runs in Pyodide with its supported standard library and any packages "
+            "explicitly preloaded by the caller. Files under /data persist and may be "
+            "accessed with normal open(), pathlib, and os APIs; a requested working "
+            "directory is supported. Network and arbitrary host filesystem access are "
+            "blocked. Injected host tools are available through host_tools.call(name, "
+            "payload), and host_tools.search(query, detail='brief', limit=10) discovers "
+            "them."
+        )
 
     def _next_request_id(self) -> str:
         self._request_counter += 1
@@ -879,9 +981,9 @@ class LocalSandbox:
 
         try:
             if not isinstance(tool_name, str):
-                raise ValueError("Tool call is missing a valid name")
+                raise TypeError("Tool call is missing a valid name")
             if not isinstance(payload, dict):
-                raise ValueError(f"Tool {tool_name!r} payload must be an object")
+                raise TypeError(f"Tool {tool_name!r} payload must be an object")
             if tool_name not in definitions:
                 return {
                     "type": "tool_error",
@@ -907,20 +1009,181 @@ class LocalSandbox:
                 "error_type": "timeout",
                 "message": str(exc),
             }
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             return {
                 "type": "tool_error",
                 "id": tool_id,
                 "error_type": "validation_error",
                 "message": str(exc),
             }
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - tool failures cross this boundary
             return {
                 "type": "tool_error",
                 "id": tool_id,
                 "error_type": "internal_error",
                 "message": str(exc),
             }
+
+    def _build_monty_tools(
+        self,
+        toolset: PythonToolset | None,
+        tool_calls: list[_MontyToolCall],
+    ) -> dict[str, Callable[..., Any]]:
+        """Build Monty's direct external-function lookup."""
+        if toolset is None:
+            definitions: dict[str, ToolDefinition] = {}
+            handlers: dict[str, ToolHandler] = {}
+        else:
+            definitions, handlers = self._validate_toolset(toolset)
+
+        if "tool_search" in definitions:
+            raise ValueError("'tool_search' is reserved by the Monty runtime")
+
+        searchable: list[SearchableTool] = list(definitions.values())
+
+        def tool_search(
+            query: str,
+            detail: str = "brief",
+            limit: int = 10,
+        ) -> list[dict[str, Any]]:
+            """Search the host tools available to this execution."""
+            return search_tools(searchable, query, detail, limit)
+
+        external_lookup: dict[str, Callable[..., Any]] = {"tool_search": tool_search}
+        for name, definition in definitions.items():
+            if not name.isidentifier() or keyword.iskeyword(name):
+                raise ValueError(
+                    f"Monty tool names must be valid Python identifiers: {name!r}"
+                )
+            property_names = list(definition.input_schema.get("properties", {}))
+
+            def invoke(
+                *args: JsonValue,
+                _definition: ToolDefinition = definition,
+                _handler: ToolHandler = handlers[name],
+                _property_names: list[str] = property_names,
+                **kwargs: JsonValue,
+            ) -> JsonValue:
+                if len(args) > len(_property_names):
+                    raise ValueError(
+                        f"Tool {_definition.name!r} received too many positional arguments"
+                    )
+                payload = dict(zip(_property_names, args, strict=False))
+                duplicates = payload.keys() & kwargs.keys()
+                if duplicates:
+                    duplicate = min(duplicates)
+                    raise ValueError(
+                        f"Tool {_definition.name!r} received {duplicate!r} twice"
+                    )
+                payload.update(kwargs)
+                _validate_json_schema(
+                    payload, _definition.input_schema, path=f"$[{_definition.name}]"
+                )
+                started_at = int(time.time() * 1000)
+                try:
+                    result = _execute_tool_handler(_definition, _handler, payload)
+                    if _definition.output_schema is not None:
+                        _validate_json_schema(
+                            result,
+                            _definition.output_schema,
+                            path=f"$[{_definition.name}]",
+                        )
+                except Exception as exc:
+                    tool_calls.append(
+                        _MontyToolCall(
+                            name=_definition.name,
+                            started_at=started_at,
+                            completed_at=int(time.time() * 1000),
+                            payload=payload,
+                            result=None,
+                            error=type(exc).__name__,
+                        )
+                    )
+                    raise
+                tool_calls.append(
+                    _MontyToolCall(
+                        name=_definition.name,
+                        started_at=started_at,
+                        completed_at=int(time.time() * 1000),
+                        payload=payload,
+                        result=result,
+                        error=None,
+                    )
+                )
+                return result
+
+            external_lookup[name] = invoke
+
+        return external_lookup
+
+    def _execute_python_via_monty(
+        self,
+        code: str,
+        cwd: str,
+        toolset: PythonToolset | None,
+    ) -> PythonResult:
+        """Execute Python with Monty against a materialized AgentFS workspace."""
+        if cwd != "/data":
+            raise ValueError(
+                "Monty does not support working directories; use cwd='/data' and "
+                "absolute /data paths"
+            )
+        assert self._monty_runtime is not None
+
+        tool_calls: list[_MontyToolCall] = []
+        external_lookup = self._build_monty_tools(toolset, tool_calls)
+        started_at = int(time.time() * 1000)
+        exit_code = 1
+
+        with self._server_lock:
+            prepared = self._send_request({"type": "prepare_monty_filesystem"})
+            filesystem_root = Path(prepared["fs_root"])
+            try:
+                stdout, stderr, exit_code, error = self._monty_runtime.execute(
+                    code,
+                    filesystem_root,
+                    external_lookup,
+                )
+                return PythonResult(
+                    stdout=stdout,
+                    stderr=stderr,
+                    exit_code=exit_code,
+                    error=error,
+                )
+            except Exception as exc:
+                if self._destroyed:
+                    raise RuntimeError(
+                        "LocalSandbox instance has been destroyed"
+                    ) from exc
+                from localsandbox._monty import MontyWorkerCrashed
+
+                if isinstance(exc, MontyWorkerCrashed):
+                    raise SubprocessCrashed(f"Monty worker crashed: {exc}") from exc
+                raise
+            finally:
+                if not self._destroyed:
+                    for tool_call in tool_calls:
+                        self._send_request(
+                            {
+                                "type": "record_monty_tool_call",
+                                "name": tool_call.name,
+                                "started_at": tool_call.started_at,
+                                "completed_at": tool_call.completed_at,
+                                "payload": tool_call.payload,
+                                "result": tool_call.result,
+                                "error": tool_call.error,
+                            }
+                        )
+                    self._send_request(
+                        {
+                            "type": "finish_monty_filesystem",
+                            "started_at": started_at,
+                            "code_length": len(code),
+                            "cwd": cwd,
+                            "tool_call_count": len(tool_calls),
+                            "exit_code": exit_code,
+                        }
+                    )
 
     def _execute_python_via_server(
         self,
@@ -946,6 +1209,40 @@ class LocalSandbox:
                 }
                 for d in toolset.definitions
             ]
+
+        if _INTERNAL_TOOL_SEARCH_NAME in definitions:
+            raise ValueError(
+                f"{_INTERNAL_TOOL_SEARCH_NAME!r} is reserved by LocalSandbox"
+            )
+
+        searchable: list[SearchableTool] = list(definitions.values())
+        definitions[_INTERNAL_TOOL_SEARCH_NAME] = ToolDefinition(
+            name=_INTERNAL_TOOL_SEARCH_NAME,
+            description="Search tools available to sandboxed Python.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "detail": {"type": "string", "enum": ["brief", "full"]},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["query", "detail", "limit"],
+                "additionalProperties": False,
+            },
+        )
+
+        def handle_tool_search(payload: dict[str, JsonValue]) -> JsonValue:
+            return cast(
+                JsonValue,
+                search_tools(
+                    searchable,
+                    str(payload["query"]),
+                    str(payload["detail"]),
+                    int(cast(int, payload["limit"])),
+                ),
+            )
+
+        handlers[_INTERNAL_TOOL_SEARCH_NAME] = handle_tool_search
 
         with self._server_lock:
             self._ensure_server()
@@ -1388,22 +1685,23 @@ class LocalSandbox:
         toolset: ToolsetInput | None = None,
     ) -> PythonResult:
         """
-        Execute Python code in the sandbox using Pyodide.
+        Execute Python code using the sandbox's selected Python runtime.
 
-        The Python code runs in a WebAssembly sandbox with access to the
-        sandbox's filesystem. File changes made by Python are persisted back
-        to the sandbox. Compatible executions may reuse a warmed interpreter.
+        The Python code runs in the selected isolated runtime with access to
+        the sandbox's filesystem. File changes made by Python are persisted
+        back to the sandbox. Executions may reuse a warmed interpreter.
 
         Args:
             code: The Python code to execute.
             cwd: Working directory for Python (default: sandbox cwd).
-            preload_packages: Optional list of Pyodide packages to preload.
+            preload_packages: Optional Pyodide packages to preload. Monty rejects this.
             toolset: Optional `PythonToolset` or sequence of callables exposed as tools.
 
         Returns:
             PythonResult with stdout, stderr, exit_code, and optional error.
 
         Raises:
+            ValueError: If an option is unsupported by the selected runtime.
             SubprocessCrashed: If Python execution fails at the shim level.
             RuntimeError: If the sandbox has been destroyed.
         """
@@ -1411,6 +1709,10 @@ class LocalSandbox:
             raise RuntimeError("LocalSandbox instance has been destroyed")
 
         effective_cwd = cwd if cwd is not None else self._cwd
+        if self._python_runtime is PythonRuntime.MONTY and preload_packages is not None:
+            raise ValueError(
+                "preload_packages is unavailable with the Monty Python runtime"
+            )
         if toolset is None or isinstance(toolset, PythonToolset):
             resolved_toolset = toolset
         elif isinstance(toolset, Sequence) and not isinstance(toolset, (str, bytes)):
@@ -1421,6 +1723,13 @@ class LocalSandbox:
         else:
             raise TypeError(
                 "toolset must be a PythonToolset or a sequence of callables"
+            )
+
+        if self._python_runtime is PythonRuntime.MONTY:
+            return self._execute_python_via_monty(
+                code=code,
+                cwd=effective_cwd,
+                toolset=resolved_toolset,
             )
 
         return self._execute_python_via_server(
@@ -1439,6 +1748,11 @@ class LocalSandbox:
         """
         if self._destroyed:
             return
+        self._destroyed = True
+
+        if self._monty_runtime is not None:
+            self._monty_runtime.close()
+            self._monty_runtime = None
 
         self._stop_server()
 
@@ -1461,9 +1775,7 @@ class LocalSandbox:
             except OSError:
                 pass
 
-        self._destroyed = True
-
-    def __enter__(self) -> "LocalSandbox":
+    def __enter__(self) -> "LocalSandbox":  # noqa: PYI034
         """Context manager entry - returns self."""
         return self
 

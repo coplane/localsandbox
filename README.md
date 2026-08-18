@@ -3,19 +3,20 @@
 A Python SDK for sandboxed filesystem operations, built on
 [just-bash](https://github.com/vercel-labs/just-bash),
 [AgentFS](https://github.com/tursodatabase/agentfs), and
-[Pyodide](https://pyodide.org/). Provides AI agents with a persistent, isolated
-environment backed by SQLite.
+[Pyodide](https://pyodide.org/), with an optional
+[Monty](https://github.com/pydantic/monty) Python runtime. Provides AI agents
+with a persistent, isolated environment backed by SQLite.
 
-> ⚠️ **Warning**: This project is in beta. While it provides isolation through
-> WebAssembly and a simulated bash environment, it has not been security audited
-> and should **not** be relied upon as a fully secure sandbox for running
-> untrusted code. Use at your own risk.
+> ⚠️ **Warning**: This project is in beta. While its runtimes isolate executed
+> code and bash is simulated, LocalSandbox has not been security audited and
+> should **not** be relied upon as a fully secure sandbox for running untrusted
+> code. Use at your own risk.
 
 ## Features
 
 - **Sandboxed Execution**: Run bash commands in an isolated environment
-- **Python Execution**: Run Python via Pyodide (WebAssembly) on the same virtual
-  filesystem
+- **Python Execution**: Choose Pyodide (WebAssembly) or Monty when constructing
+  a sandbox; both use the same persistent virtual filesystem
 - **Persistent Filesystem**: All file operations persist across commands in
   SQLite
 - **Key-Value Store**: Separate KV API for agent state management
@@ -32,6 +33,14 @@ environment backed by SQLite.
 pip install localsandbox
 # or
 uv add localsandbox
+```
+
+Install the optional Monty backend with:
+
+```bash
+pip install "localsandbox[monty]"
+# or
+uv add "localsandbox[monty]"
 ```
 
 ### Prerequisites
@@ -95,6 +104,7 @@ LocalSandbox(
     snapshot: bytes | None = None,
     cwd: str = "/data",
     preset: ExecutionPreset = ExecutionPreset.NORMAL,
+    python_runtime: PythonRuntime | str = PythonRuntime.PYODIDE,
 )
 ```
 
@@ -107,6 +117,8 @@ LocalSandbox(
   with `files`).
 - `cwd`: Initial working directory (default: `/data`).
 - `preset`: Execution limits preset (`STRICT`, `NORMAL`, or `PERMISSIVE`).
+- `python_runtime`: Python backend owned by this sandbox: `"pyodide"` (default)
+  or `"monty"`. It cannot be changed between executions.
 
 ### Methods
 
@@ -138,9 +150,9 @@ sandbox.execute_python(
 ) -> PythonResult
 ```
 
-Execute Python via Pyodide. The sandbox filesystem is mounted at `/data` in both
-bash and Python environments. All paths should use the `/data` prefix for
-consistency across all operations (bash, Python, and file helpers).
+Execute Python with the backend selected by the constructor. The sandbox
+filesystem is mounted at `/data` in both bash and Python environments. All
+paths should use the `/data` prefix for consistency across all operations.
 
 If `preload_packages` is provided, those Pyodide packages are loaded before
 execution. No network access is granted unless preloading is requested.
@@ -152,9 +164,11 @@ The simplest form is to pass a list of typed Python callables. LocalSandbox infe
 ```python
 from localsandbox import LocalSandbox
 
+
 def web_search(query: str) -> dict[str, list[str]]:
     """Search the web for information."""
     return {"results": ["result1", "result2"]}
+
 
 with LocalSandbox() as sandbox:
     result = sandbox.execute_python(
@@ -171,7 +185,37 @@ print(response["results"])
 
 Alternatively you can pass an explicit `PythonToolset` if you need full control over schemas, names, or timeouts.
 
-`execute_python()` reuses a warmed Python runner when the tool manifest and `preload_packages` are unchanged. Files under `/data` always persist across calls. Python interpreter state may also persist across compatible calls, but sholudn't be depended on. The requested working directory is reapplied for each execution. Create a new `LocalSandbox` if you need a fresh interpreter.
+With `python_runtime="monty"`, injected tools are called directly by name and a
+default `tool_search()` function provides the same tool discovery behavior as
+`host_tools.search()`. Both call the same host-side search implementation:
+
+```python
+with LocalSandbox(python_runtime="monty") as sandbox:
+    result = sandbox.execute_python(
+        """
+matches = tool_search("web")
+response = web_search(query="hello")
+print(response["results"])
+""",
+        toolset=[web_search],
+    )
+```
+
+Monty does not support third-party packages or `preload_packages`. Its
+filesystem interface uses `open()` and `pathlib` with absolute `/data` paths;
+per-execution working directories and `os` filesystem helpers are unavailable.
+The runtime is intentionally a limited Python/standard-library subset and is
+not expected to be source-compatible with Pyodide.
+
+Call `LocalSandbox.get_python_hint("monty")` or
+`LocalSandbox.get_python_hint("pyodide")` to get concise capability guidance
+suitable for an agent prompt.
+
+`execute_python()` reuses a warmed interpreter. Files under `/data` always
+persist across calls. Python interpreter state may also persist across
+compatible calls, but should not be depended on. Pyodide reapplies the requested
+working directory for each execution; Monty supports only `/data`. Create a new
+`LocalSandbox` if you need a fresh interpreter.
 
 #### File Operations
 
@@ -213,11 +257,13 @@ from localsandbox import LocalSandbox
 
 with LocalSandbox() as sandbox:
     sandbox.bash('echo "hello"')
-    sandbox.bash('ls -la')
+    sandbox.bash("ls -la")
 
     history = sandbox.history()
     for entry in history:
-        print(f"Command: {entry.parameters['command']}, Exit: {entry.result['exitCode']}")
+        print(
+            f"Command: {entry.parameters['command']}, Exit: {entry.result['exitCode']}"
+        )
 ```
 
 #### Snapshot & Resume
@@ -244,6 +290,7 @@ All methods have async versions prefixed with `a`:
 import asyncio
 from localsandbox import LocalSandbox
 
+
 async def main():
     sandbox = LocalSandbox()
     try:
@@ -254,6 +301,7 @@ async def main():
         value = await sandbox.kv.aget("key")
     finally:
         await sandbox.adestroy()
+
 
 asyncio.run(main())
 ```
@@ -282,12 +330,14 @@ LocalSandbox uses a TypeScript shim (running on Deno) that bridges Python to:
 
 - **just-bash**: A bash interpreter/simulator written in TypeScript
 - **AgentFS**: SQLite-based virtual filesystem
-- **Pyodide**: Python interpreter compiled to WebAssembly for sandboxed Python
-  execution
+- **Pyodide**: Full-featured Python interpreter compiled to WebAssembly
+- **Monty**: Optional minimal Python interpreter for fast agent-authored code
 
 Each bash call spawns a Deno subprocess that runs just-bash against the AgentFS database. Python execution uses a persistent Deno/Pyodide subprocess across compatible calls, communicating via line-delimited JSON over stdio. When a toolset is provided, tool calls are relayed between the sandbox and host handlers through the same protocol.
 
-Both bash and Python share the same virtual filesystem backed by SQLite.
+Both bash and either Python runtime share the same virtual filesystem backed by
+SQLite. Monty mounts a narrowly scoped materialization at `/data`, and changes
+are synchronized back into AgentFS after each execution.
 
 ## Development
 

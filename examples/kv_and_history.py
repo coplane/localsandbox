@@ -1,5 +1,5 @@
-from localsandbox import LocalSandbox
 from examples.console import console
+from localsandbox import LocalSandbox
 
 
 def main() -> None:

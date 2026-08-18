@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from localsandbox import (
-    LocalSandbox,
     FileNotFoundError,
+    LocalSandbox,
 )
 
 
