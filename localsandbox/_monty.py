@@ -1,6 +1,7 @@
 """Optional Monty runtime adapter."""
 
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +28,10 @@ class MontyRuntime:
     """Own a persistent Monty pool session for one LocalSandbox."""
 
     def __init__(self) -> None:
-        self._pool_context = Monty(request_timeout=60)
-        self._pool = self._pool_context.__enter__()
-        self._session_context = self._pool.checkout(type_check=False)
-        self._session = self._session_context.__enter__()
+        with ExitStack() as stack:
+            pool = stack.enter_context(Monty(request_timeout=60))
+            self._session = stack.enter_context(pool.checkout(type_check=False))
+            self._stack = stack.pop_all()
         self._closed = False
 
     def execute(
@@ -77,7 +78,6 @@ class MontyRuntime:
         if self._closed:
             return
         try:
-            self._session_context.__exit__(None, None, None)
+            self._stack.close()
         finally:
-            self._pool_context.__exit__(None, None, None)
             self._closed = True
